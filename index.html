@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Net Worth Tracker</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <header>
+    <div class="header-content">
+      <div class="header-left">
+        <h1>Net Worth Tracker</h1>
+        <span class="last-updated" id="last-updated"></span>
+      </div>
+      <div class="header-right">
+        <div class="total-display">
+          <span class="total-label">Total Net Worth</span>
+          <span class="total-value" id="header-total">$0</span>
+          <span class="total-change" id="header-change"></span>
+        </div>
+        <button class="btn btn-ghost" id="refresh-btn">↻ Refresh Prices</button>
+        <button class="btn btn-primary" id="snapshot-btn">Save Snapshot</button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="tab-nav">
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="stocks">Stocks</button>
+    <button class="tab" data-tab="crypto">Crypto</button>
+    <button class="tab" data-tab="private">Private</button>
+    <button class="tab" data-tab="history">History</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+
+    <!-- DASHBOARD -->
+    <section id="tab-dashboard" class="tab-content active">
+      <div class="dash-cats card">
+        <div class="cat-card">
+          <div class="cat-label">Stocks</div>
+          <div class="cat-value" id="cat-stocks-val">$0</div>
+          <div class="cat-pct" id="cat-stocks-pct">0%</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-label">Crypto</div>
+          <div class="cat-value" id="cat-crypto-val">$0</div>
+          <div class="cat-pct" id="cat-crypto-pct">0%</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-label">Real Estate</div>
+          <div class="cat-value" id="cat-realestate-val">$0</div>
+          <div class="cat-pct" id="cat-realestate-pct">0%</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-label">Private Equity</div>
+          <div class="cat-value" id="cat-pe-val">$0</div>
+          <div class="cat-pct" id="cat-pe-pct">0%</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-label">Startup Equity</div>
+          <div class="cat-value" id="cat-startup-val">$0</div>
+          <div class="cat-pct" id="cat-startup-pct">0%</div>
+        </div>
+      </div>
+
+      <div class="dash-row">
+        <div class="card dash-history">
+          <h3>Net Worth Over Time</h3>
+          <div class="chart-wrap">
+            <canvas id="dash-history-chart"></canvas>
+          </div>
+        </div>
+        <div class="card dash-donut">
+          <h3>Allocation</h3>
+          <div class="chart-wrap">
+            <canvas id="allocation-chart"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STOCKS -->
+    <section id="tab-stocks" class="tab-content">
+      <div class="section-header">
+        <h2>Stock Portfolio</h2>
+        <button class="btn btn-primary" id="add-stock-toggle">+ Add Stock</button>
+      </div>
+
+      <div class="card form-card" id="stock-form" style="display:none">
+        <h3 id="stock-form-title">Add Stock</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Ticker</label>
+            <input type="text" id="s-ticker" placeholder="AAPL" style="text-transform:uppercase">
+          </div>
+          <div class="form-group">
+            <label>Shares</label>
+            <input type="number" id="s-shares" placeholder="10" min="0" step="any">
+          </div>
+          <div class="form-group">
+            <label>Broker</label>
+            <select id="s-broker">
+              <option value="Chase">Chase</option>
+              <option value="E-Trade">E-Trade</option>
+              <option value="Robinhood">Robinhood</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Type</label>
+            <select id="s-type">
+              <option value="long-term">Long-term Hold</option>
+              <option value="short-term">Short-term Trade</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Cost Basis / Share <em>(optional)</em></label>
+            <input type="number" id="s-cost" placeholder="150.00" min="0" step="any">
+          </div>
+          <div class="form-group">
+            <label>Notes <em>(optional)</em></label>
+            <input type="text" id="s-notes" placeholder="Optional">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="save-stock-btn">Save</button>
+          <button class="btn btn-ghost" id="cancel-stock-btn">Cancel</button>
+        </div>
+        <input type="hidden" id="s-editing-id">
+      </div>
+
+      <div class="card">
+        <div class="filter-bar">
+          <div class="filter-group">
+            <span class="filter-label">Broker:</span>
+            <button class="pill active" data-broker="all">All</button>
+            <button class="pill" data-broker="Chase">Chase</button>
+            <button class="pill" data-broker="E-Trade">E-Trade</button>
+            <button class="pill" data-broker="Robinhood">Robinhood</button>
+            <button class="pill" data-broker="Other">Other</button>
+          </div>
+          <div class="filter-group">
+            <span class="filter-label">Type:</span>
+            <button class="pill active" data-stype="all">All</button>
+            <button class="pill" data-stype="long-term">Long-term</button>
+            <button class="pill" data-stype="short-term">Short-term</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Shares</th>
+                <th>Price</th>
+                <th>Value</th>
+                <th>Broker</th>
+                <th>Type</th>
+                <th>Cost Basis</th>
+                <th>P/L</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="stocks-tbody"></tbody>
+            <tfoot>
+              <tr>
+                <td colspan="3"><strong>Total</strong></td>
+                <td id="stocks-foot"><strong>—</strong></td>
+                <td colspan="5"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- CRYPTO -->
+    <section id="tab-crypto" class="tab-content">
+      <div class="section-header">
+        <h2>Crypto Holdings</h2>
+        <button class="btn btn-primary" id="add-crypto-toggle">+ Add Crypto</button>
+      </div>
+
+      <div class="card form-card" id="crypto-form" style="display:none">
+        <h3 id="crypto-form-title">Add Crypto</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>CoinGecko ID</label>
+            <input type="text" id="c-coinid" placeholder="bitcoin">
+            <span class="hint">Lowercase ID from coingecko.com (e.g. bitcoin, ethereum, solana)</span>
+          </div>
+          <div class="form-group">
+            <label>Display Name</label>
+            <input type="text" id="c-name" placeholder="Bitcoin">
+          </div>
+          <div class="form-group">
+            <label>Amount</label>
+            <input type="number" id="c-amount" placeholder="0.5" min="0" step="any">
+          </div>
+          <div class="form-group">
+            <label>Cost Basis / Coin <em>(optional)</em></label>
+            <input type="number" id="c-cost" placeholder="30000" min="0" step="any">
+          </div>
+          <div class="form-group">
+            <label>Notes <em>(optional)</em></label>
+            <input type="text" id="c-notes" placeholder="Optional">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="save-crypto-btn">Save</button>
+          <button class="btn btn-ghost" id="cancel-crypto-btn">Cancel</button>
+        </div>
+        <input type="hidden" id="c-editing-id">
+      </div>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Coin</th>
+                <th>Amount</th>
+                <th>Price</th>
+                <th>Value</th>
+                <th>Cost Basis</th>
+                <th>P/L</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="crypto-tbody"></tbody>
+            <tfoot>
+              <tr>
+                <td colspan="3"><strong>Total</strong></td>
+                <td id="crypto-foot"><strong>—</strong></td>
+                <td colspan="3"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- PRIVATE INVESTMENTS -->
+    <section id="tab-private" class="tab-content">
+      <div class="section-header">
+        <h2>Private Investments</h2>
+        <button class="btn btn-primary" id="add-private-toggle">+ Add Investment</button>
+      </div>
+
+      <div class="card form-card" id="private-form" style="display:none">
+        <h3 id="private-form-title">Add Investment</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="p-name" placeholder="123 Main St">
+          </div>
+          <div class="form-group">
+            <label>Category</label>
+            <select id="p-category">
+              <option value="real-estate">Real Estate</option>
+              <option value="private-equity">Private Equity</option>
+              <option value="startup-equity">Startup Equity</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Current Value ($)</label>
+            <input type="number" id="p-value" placeholder="500000" min="0" step="any">
+          </div>
+          <div class="form-group">
+            <label>Cost Basis ($) <em>(optional)</em></label>
+            <input type="number" id="p-cost" placeholder="400000" min="0" step="any">
+          </div>
+          <div class="form-group form-span2">
+            <label>Notes <em>(optional)</em></label>
+            <input type="text" id="p-notes" placeholder="Optional">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="save-private-btn">Save</button>
+          <button class="btn btn-ghost" id="cancel-private-btn">Cancel</button>
+        </div>
+        <input type="hidden" id="p-editing-id">
+      </div>
+
+      <div id="private-groups"></div>
+    </section>
+
+    <!-- HISTORY -->
+    <section id="tab-history" class="tab-content">
+      <div class="section-header">
+        <h2>Net Worth History</h2>
+        <button class="btn btn-primary" id="history-snapshot-btn">Save Snapshot</button>
+      </div>
+
+      <div class="dash-row">
+        <div class="card stats-grid">
+          <div class="stat">
+            <div class="stat-label">All-Time Growth</div>
+            <div class="stat-value" id="stat-growth">—</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">% Change</div>
+            <div class="stat-value" id="stat-pct">—</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Starting Net Worth</div>
+            <div class="stat-value" id="stat-first">—</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Latest Snapshot</div>
+            <div class="stat-value" id="stat-latest">—</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Snapshots</div>
+            <div class="stat-value" id="stat-count">0</div>
+          </div>
+        </div>
+        <div class="card history-chart-card">
+          <canvas id="history-chart"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:14px">Snapshot Log</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Net Worth</th>
+                <th>Stocks</th>
+                <th>Crypto</th>
+                <th>Real Estate</th>
+                <th>Private Equity</th>
+                <th>Startup Equity</th>
+                <th>Change</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="snapshots-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="tab-content">
+      <div class="section-header"><h2>Settings</h2></div>
+
+      <div class="card settings-card">
+        <h3>Live Stock Prices</h3>
+        <p class="settings-desc">
+          Enter a free Finnhub API key to fetch live stock prices.
+          Get one at <a href="https://finnhub.io" target="_blank">finnhub.io</a> — free tier gives 60 calls/min.
+        </p>
+        <div class="form-group" style="max-width:420px">
+          <label>Finnhub API Key</label>
+          <input type="text" id="finnhub-key" placeholder="Paste your API key here">
+        </div>
+        <button class="btn btn-primary" id="save-settings-btn" style="margin-top:12px">Save</button>
+      </div>
+
+      <div class="card settings-card">
+        <h3>Data</h3>
+        <p class="settings-desc">Export a JSON backup or restore from one.</p>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="export-btn">Export JSON</button>
+          <button class="btn btn-ghost" id="import-btn">Import JSON</button>
+          <input type="file" id="import-file" accept=".json" style="display:none">
+        </div>
+      </div>
+
+      <div class="card settings-card danger">
+        <h3>Danger Zone</h3>
+        <p class="settings-desc">Permanently erase all data from this browser. Cannot be undone.</p>
+        <button class="btn btn-danger" id="clear-all-btn">Clear All Data</button>
+      </div>
+    </section>
+
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
