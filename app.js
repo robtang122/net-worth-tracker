@@ -6,10 +6,12 @@ const K = {
   crypto:       'nwt_crypto',
   private:      'nwt_private',
   accounts:     'nwt_accounts',
+  options:      'nwt_options',
   snapshots:    'nwt_snapshots',
   settings:     'nwt_settings',
   prices:       'nwt_prices',
   cryptoPrices: 'nwt_crypto_prices',
+  optionPrices: 'nwt_option_prices',
 };
 
 // ============================================================
@@ -20,10 +22,12 @@ let S = {
   crypto:       [],
   private:      [],
   accounts:     [],
+  options:      [],
   snapshots:    [],
   settings:     { finnhubKey: '', darkMode: true },
   prices:       {},
   cryptoPrices: {},
+  optionPrices: {}, // keyed by option id
   filters:      { broker: 'all', type: 'all' },
 };
 
@@ -37,10 +41,12 @@ function load() {
   S.crypto       = parse(K.crypto,       []);
   S.private      = parse(K.private,      []);
   S.accounts     = parse(K.accounts,     []);
+  S.options      = parse(K.options,      []);
   S.snapshots    = parse(K.snapshots,    []);
   S.settings     = parse(K.settings,     { finnhubKey: '', darkMode: true });
   S.prices       = parse(K.prices,       {});
   S.cryptoPrices = parse(K.cryptoPrices, {});
+  S.optionPrices = parse(K.optionPrices, {});
   if (S.settings.darkMode === undefined) S.settings.darkMode = true;
 }
 
@@ -49,10 +55,12 @@ function save() {
   ls(K.crypto,       S.crypto);
   ls(K.private,      S.private);
   ls(K.accounts,     S.accounts);
+  ls(K.options,      S.options);
   ls(K.snapshots,    S.snapshots);
   ls(K.settings,     S.settings);
   ls(K.prices,       S.prices);
   ls(K.cryptoPrices, S.cryptoPrices);
+  ls(K.optionPrices, S.optionPrices);
 }
 
 function parse(key, fallback) {
@@ -79,6 +87,14 @@ function cryptoTotal() {
 
 function privateTotal() {
   return S.private.reduce((sum, p) => sum + (p.currentValue || 0), 0);
+}
+
+function optionsTotal() {
+  return S.options.reduce((sum, o) => {
+    const price = S.optionPrices[o.id];
+    if (price == null) return sum;
+    return sum + (price * (o.contracts || 1) * 100);
+  }, 0);
 }
 
 function totalMarginDebt() {
@@ -221,6 +237,31 @@ async function fetchCryptoPrices(coinIds) {
   } catch { return {}; }
 }
 
+// Fetch options chain for an underlying, return map of { id: lastPrice }
+async function fetchOptionPricesForUnderlying(underlying, opts) {
+  if (!S.settings.finnhubKey) return {};
+  try {
+    const res  = await fetch(
+      `https://finnhub.io/api/v1/stock/option-chain?symbol=${underlying}&token=${S.settings.finnhubKey}`
+    );
+    const data = await res.json();
+    if (!data.data) return {};
+
+    const result = {};
+    for (const opt of opts) {
+      const expEntry = data.data.find(d => d.expirationDate === opt.expiration);
+      if (!expEntry) continue;
+      const chain = opt.optionType === 'call'
+        ? expEntry.options?.CALL
+        : expEntry.options?.PUT;
+      if (!chain) continue;
+      const match = chain.find(c => Math.abs((c.strike || 0) - opt.strike) < 0.01);
+      if (match && match.lastPrice != null) result[opt.id] = match.lastPrice;
+    }
+    return result;
+  } catch { return {}; }
+}
+
 async function refreshPrices() {
   const btn      = document.getElementById('refresh-btn');
   btn.textContent = '↻ Refreshing…';
@@ -236,6 +277,20 @@ async function refreshPrices() {
         if (p !== null) S.prices[t] = p;
         await delay(220);
       }
+    }
+  }
+
+  // Options prices — grouped by underlying to minimize API calls
+  if (S.options.length && S.settings.finnhubKey) {
+    const byUnderlying = {};
+    for (const o of S.options) {
+      if (!byUnderlying[o.underlying]) byUnderlying[o.underlying] = [];
+      byUnderlying[o.underlying].push(o);
+    }
+    for (const [underlying, opts] of Object.entries(byUnderlying)) {
+      const prices = await fetchOptionPricesForUnderlying(underlying, opts);
+      Object.assign(S.optionPrices, prices);
+      await delay(220);
     }
   }
 
@@ -267,6 +322,7 @@ function renderAll() {
   renderDashboard();
   renderAccounts();
   renderStocks();
+  renderOptions();
   renderCrypto();
   renderPrivate();
   renderHistory();
@@ -498,8 +554,10 @@ function renderStocks() {
       'Other':     'badge-other',
     }[s.broker] || 'badge-other';
 
-    const typeBadge  = s.type === 'long-term' ? 'badge-long' : 'badge-short';
-    const typeLabel  = s.type === 'long-term' ? 'Long-term' : 'Short-term';
+    // Backward compat: old data used 'long-term'/'short-term'
+    const isHold     = s.type === 'hold' || s.type === 'long-term';
+    const typeBadge  = isHold ? 'badge-hold' : 'badge-trade';
+    const typeLabel  = isHold ? 'Hold' : 'Trade';
 
     return `<tr>
       <td><strong>${s.ticker}</strong></td>
@@ -521,6 +579,75 @@ function renderStocks() {
   }).join('');
 
   set('stocks-foot', `<strong>${fmt(total)}</strong>`);
+}
+
+// ============================================================
+// RENDER — OPTIONS
+// ============================================================
+function renderOptions() {
+  const tbody = document.getElementById('options-tbody');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  if (!S.options.length) {
+    tbody.innerHTML = `<tr class="empty"><td colspan="12">No options yet — add one above.</td></tr>`;
+    set('options-foot', '<strong>—</strong>');
+    return;
+  }
+
+  let total = 0;
+  tbody.innerHTML = S.options.map(o => {
+    const price      = S.optionPrices[o.id];
+    const contracts  = o.contracts || 1;
+    const val        = price != null ? price * contracts * 100 : null;
+    if (val) total  += val;
+
+    const premium    = o.premium || 0;
+    const totalCost  = premium * contracts * 100;
+    const pl         = val != null ? val - totalCost : null;
+    const plPct      = (pl != null && totalCost > 0) ? (pl / totalCost) * 100 : null;
+
+    const expDate    = new Date(o.expiration + 'T00:00:00');
+    const dte        = Math.ceil((expDate - today) / 86400000);
+    const expired    = dte < 0;
+    const dteLabel   = expired
+      ? '<span class="neg">Expired</span>'
+      : dte === 0 ? '<span style="color:var(--danger)">Today</span>'
+      : `${dte}d`;
+
+    const brokerBadge = {
+      'Chase':     'badge-chase',
+      'E-Trade':   'badge-etrade',
+      'Robinhood': 'badge-robinhood',
+      'Other':     'badge-other',
+    }[o.broker] || 'badge-other';
+
+    const expLabel   = new Date(o.expiration + 'T00:00:00')
+      .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+
+    return `<tr>
+      <td><strong>${o.underlying}</strong></td>
+      <td><span class="badge badge-${o.optionType}">${o.optionType.toUpperCase()}</span></td>
+      <td>$${o.strike}</td>
+      <td>${expLabel}</td>
+      <td>${dteLabel}</td>
+      <td>${contracts}</td>
+      <td>${fmtP(premium)}</td>
+      <td>${price != null ? fmtP(price) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${val != null ? fmt(expired ? 0 : val) : '—'}</td>
+      <td>${pl != null && !expired
+        ? `<span class="${pl >= 0 ? 'pos' : 'neg'}">${fmt(pl)} <small>(${fmtPct(plPct)})</small></span>`
+        : expired ? '<span class="neg">$0</span>' : '—'
+      }</td>
+      <td><span class="badge ${brokerBadge}">${o.broker}</span></td>
+      <td>
+        <button class="icon-btn" onclick="editOption('${o.id}')" title="Edit">✏</button>
+        <button class="icon-btn" onclick="delOption('${o.id}')"  title="Delete">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  set('options-foot', `<strong>${fmt(total)}</strong>`);
 }
 
 // ============================================================
@@ -909,6 +1036,33 @@ function delPrivate(id) {
 }
 
 // ============================================================
+// CRUD — OPTIONS
+// ============================================================
+function editOption(id) {
+  const o = S.options.find(o => o.id === id);
+  if (!o) return;
+  el('o-ticker').value      = o.underlying;
+  el('o-type').value        = o.optionType;
+  el('o-strike').value      = o.strike;
+  el('o-expiration').value  = o.expiration;
+  el('o-contracts').value   = o.contracts;
+  el('o-premium').value     = o.premium;
+  el('o-broker').value      = o.broker;
+  el('o-notes').value       = o.notes || '';
+  el('o-editing-id').value  = id;
+  document.getElementById('option-form-title').textContent = 'Edit Option';
+  showForm('option-form');
+}
+
+function delOption(id) {
+  if (!confirm('Delete this option?')) return;
+  S.options = S.options.filter(o => o.id !== id);
+  delete S.optionPrices[id];
+  save(); renderAll();
+  toast('Option removed.');
+}
+
+// ============================================================
 // CRUD — ACCOUNTS
 // ============================================================
 function editAccount(id) {
@@ -956,7 +1110,7 @@ function hideForm(id) {
 function clearStockForm() {
   ['s-ticker','s-shares','s-cost','s-notes','s-editing-id'].forEach(id => el(id).value = '');
   el('s-broker').value = 'E-Trade';
-  el('s-type').value   = 'long-term';
+  el('s-type').value   = 'hold';
   document.getElementById('stock-form-title').textContent = 'Add Stock';
 }
 
@@ -976,6 +1130,14 @@ function clearAccountForm() {
   ['a-label','a-deposited','a-margin','a-notes','a-editing-id'].forEach(id => el(id).value = '');
   el('a-broker').value = 'E-Trade';
   document.getElementById('account-form-title').textContent = 'Add Account';
+}
+
+function clearOptionForm() {
+  ['o-ticker','o-strike','o-expiration','o-contracts','o-premium','o-notes','o-editing-id']
+    .forEach(id => el(id).value = '');
+  el('o-type').value   = 'call';
+  el('o-broker').value = 'E-Trade';
+  document.getElementById('option-form-title').textContent = 'Add Option';
 }
 
 // ============================================================
@@ -1177,6 +1339,49 @@ function init() {
     save(); renderAll();
     hideForm('private-form'); clearPrivateForm();
     toast(editId ? 'Investment updated!' : 'Investment added!', 'success');
+  });
+
+  // ---- OPTIONS ----
+  el('add-option-toggle').addEventListener('click', () => {
+    const f = el('option-form');
+    if (f.style.display === 'none' || !f.style.display) {
+      clearOptionForm(); showForm('option-form');
+    } else {
+      hideForm('option-form');
+    }
+  });
+
+  el('cancel-option-btn').addEventListener('click', () => {
+    hideForm('option-form'); clearOptionForm();
+  });
+
+  el('save-option-btn').addEventListener('click', () => {
+    const underlying  = el('o-ticker').value.trim().toUpperCase();
+    const optionType  = el('o-type').value;
+    const strike      = parseFloat(el('o-strike').value);
+    const expiration  = el('o-expiration').value; // YYYY-MM-DD
+    const contracts   = parseInt(el('o-contracts').value) || 1;
+    const premium     = parseFloat(el('o-premium').value);
+    const broker      = el('o-broker').value;
+    const notes       = el('o-notes').value.trim();
+    const editId      = el('o-editing-id').value;
+
+    if (!underlying || isNaN(strike) || !expiration || isNaN(premium)) {
+      toast('Fill in all required fields.', 'error'); return;
+    }
+
+    const record = { underlying, optionType, strike, expiration, contracts, premium, broker, notes };
+
+    if (editId) {
+      const i = S.options.findIndex(o => o.id === editId);
+      if (i !== -1) S.options[i] = { ...S.options[i], ...record };
+    } else {
+      S.options.push({ id: uid(), ...record });
+    }
+
+    save(); renderAll();
+    hideForm('option-form'); clearOptionForm();
+    toast(editId ? 'Option updated!' : 'Option added!', 'success');
   });
 
   // ---- ACCOUNTS ----

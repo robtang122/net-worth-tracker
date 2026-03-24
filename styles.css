@@ -582,11 +582,15 @@ main {
 [data-theme="light"] .badge-robinhood { background: #dcfce7; color: #15803d; border: none; }
 [data-theme="light"] .badge-other     { background: #f1f5f9; color: #475569; border: none; }
 
-.badge-long  { background: #0e749020; color: #22d3ee; border: 1px solid #0e749040; }
-.badge-short { background: #92400e20; color: #fbbf24; border: 1px solid #92400e40; }
+.badge-hold  { background: #0e749020; color: #22d3ee; border: 1px solid #0e749040; }
+.badge-trade { background: #92400e20; color: #fbbf24; border: 1px solid #92400e40; }
+.badge-call  { background: #16a34a20; color: #4ade80; border: 1px solid #16a34a40; }
+.badge-put   { background: #dc262620; color: #f87171; border: 1px solid #dc262640; }
 
-[data-theme="light"] .badge-long  { background: #cffafe; color: #0e7490; border: none; }
-[data-theme="light"] .badge-short { background: #fef3c7; color: #92400e; border: none; }
+[data-theme="light"] .badge-hold  { background: #cffafe; color: #0e7490; border: none; }
+[data-theme="light"] .badge-trade { background: #fef3c7; color: #92400e; border: none; }
+[data-theme="light"] .badge-call  { background: #dcfce7; color: #16a34a; border: none; }
+[data-theme="light"] .badge-put   { background: #fee2e2; color: #dc2626; border: none; }
 
 .badge-re-fund   { background: #06574020; color: #34d399; border: 1px solid #06574040; }
 .badge-pe-fund   { background: #5b21b620; color: #c084fc; border: 1px solid #5b21b640; }
