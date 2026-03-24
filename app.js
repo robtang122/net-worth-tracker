@@ -2,13 +2,14 @@
 // STORAGE KEYS
 // ============================================================
 const K = {
-  stocks:      'nwt_stocks',
-  crypto:      'nwt_crypto',
-  private:     'nwt_private',
-  snapshots:   'nwt_snapshots',
-  settings:    'nwt_settings',
-  prices:      'nwt_prices',
-  cryptoPrices:'nwt_crypto_prices',
+  stocks:       'nwt_stocks',
+  crypto:       'nwt_crypto',
+  private:      'nwt_private',
+  accounts:     'nwt_accounts',
+  snapshots:    'nwt_snapshots',
+  settings:     'nwt_settings',
+  prices:       'nwt_prices',
+  cryptoPrices: 'nwt_crypto_prices',
 };
 
 // ============================================================
@@ -18,10 +19,11 @@ let S = {
   stocks:       [],
   crypto:       [],
   private:      [],
+  accounts:     [],
   snapshots:    [],
-  settings:     { finnhubKey: '' },
-  prices:       {},   // { TICKER: price }
-  cryptoPrices: {},   // { coinId: price }
+  settings:     { finnhubKey: '', darkMode: true },
+  prices:       {},
+  cryptoPrices: {},
   filters:      { broker: 'all', type: 'all' },
 };
 
@@ -34,16 +36,19 @@ function load() {
   S.stocks       = parse(K.stocks,       []);
   S.crypto       = parse(K.crypto,       []);
   S.private      = parse(K.private,      []);
+  S.accounts     = parse(K.accounts,     []);
   S.snapshots    = parse(K.snapshots,    []);
-  S.settings     = parse(K.settings,     { finnhubKey: '' });
+  S.settings     = parse(K.settings,     { finnhubKey: '', darkMode: true });
   S.prices       = parse(K.prices,       {});
   S.cryptoPrices = parse(K.cryptoPrices, {});
+  if (S.settings.darkMode === undefined) S.settings.darkMode = true;
 }
 
 function save() {
   ls(K.stocks,       S.stocks);
   ls(K.crypto,       S.crypto);
   ls(K.private,      S.private);
+  ls(K.accounts,     S.accounts);
   ls(K.snapshots,    S.snapshots);
   ls(K.settings,     S.settings);
   ls(K.prices,       S.prices);
@@ -55,9 +60,7 @@ function parse(key, fallback) {
   catch { return fallback; }
 }
 
-function ls(key, val) {
-  localStorage.setItem(key, JSON.stringify(val));
-}
+function ls(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -74,13 +77,56 @@ function cryptoTotal() {
   return S.crypto.reduce((sum, c) => sum + ((S.cryptoPrices[c.coinId] || 0) * c.amount), 0);
 }
 
-function privateTotal(cat) {
-  const items = cat ? S.private.filter(p => p.category === cat) : S.private;
-  return items.reduce((sum, p) => sum + (p.currentValue || 0), 0);
+function privateTotal() {
+  return S.private.reduce((sum, p) => sum + (p.currentValue || 0), 0);
+}
+
+function totalMarginDebt() {
+  return S.accounts.reduce((sum, a) => sum + (a.marginDebt || 0), 0);
 }
 
 function totalNetWorth() {
-  return stocksTotal() + cryptoTotal() + privateTotal();
+  return stocksTotal() + cryptoTotal() + privateTotal() - totalMarginDebt();
+}
+
+// Total cost basis across all assets (what was put in)
+function totalInvested() {
+  const stocksInvested = S.stocks.reduce((sum, s) => {
+    return sum + (s.costBasis ? s.costBasis * s.shares : 0);
+  }, 0);
+  const cryptoInvested = S.crypto.reduce((sum, c) => {
+    return sum + (c.costBasis ? c.costBasis * c.amount : 0);
+  }, 0);
+  const privateInvested = S.private.reduce((sum, p) => {
+    return sum + (p.called || 0);
+  }, 0);
+  return stocksInvested + cryptoInvested + privateInvested;
+}
+
+function wealthGenerated() {
+  const invested = totalInvested();
+  if (!invested) return null;
+  return totalNetWorth() - invested;
+}
+
+// Per-broker: sum stock values for that broker
+function brokerHoldings(brokerName) {
+  return S.stocks.reduce((sum, s) => {
+    if (s.broker === brokerName) {
+      return sum + ((S.prices[s.ticker] || 0) * s.shares);
+    }
+    return sum;
+  }, 0);
+}
+
+// Per-broker: sum cost basis of stocks
+function brokerCostBasis(brokerName) {
+  return S.stocks.reduce((sum, s) => {
+    if (s.broker === brokerName && s.costBasis) {
+      return sum + (s.costBasis * s.shares);
+    }
+    return sum;
+  }, 0);
 }
 
 // ============================================================
@@ -103,9 +149,48 @@ const fmtP = (v) => {
 };
 
 const fmtPct = (v) => {
-  if (isNaN(v)) return '—';
+  if (isNaN(v) || v === null) return '—';
   return (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
 };
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric'
+  });
+}
+
+function fmtRelative(iso) {
+  if (!iso) return '';
+  const now = Date.now();
+  const d   = new Date(iso).getTime();
+  const days = Math.floor((now - d) / 86400000);
+  if (days === 0) return 'Updated today';
+  if (days === 1) return 'Updated yesterday';
+  if (days < 30)  return `Updated ${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `Updated ${months}mo ago`;
+  return `Updated ${Math.floor(months/12)}y ago`;
+}
+
+// ============================================================
+// THEME
+// ============================================================
+function applyTheme(dark) {
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  const toggle = document.getElementById('dark-mode-toggle');
+  if (toggle) toggle.checked = dark;
+}
+
+function getChartTheme() {
+  const dark = S.settings.darkMode !== false;
+  return {
+    grid:    dark ? '#334155' : '#e2e8f0',
+    tick:    dark ? '#94a3b8' : '#64748b',
+    tooltip: dark ? '#1e293b' : '#ffffff',
+    tooltipText: dark ? '#f1f5f9' : '#1e293b',
+  };
+}
 
 // ============================================================
 // API
@@ -113,7 +198,7 @@ const fmtPct = (v) => {
 async function fetchStockPrice(ticker) {
   if (!S.settings.finnhubKey) return null;
   try {
-    const res = await fetch(
+    const res  = await fetch(
       `https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${S.settings.finnhubKey}`
     );
     const data = await res.json();
@@ -124,11 +209,11 @@ async function fetchStockPrice(ticker) {
 async function fetchCryptoPrices(coinIds) {
   if (!coinIds.length) return {};
   try {
-    const res = await fetch(
+    const res  = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=${coinIds.join(',')}&vs_currencies=usd`
     );
     const data = await res.json();
-    const out = {};
+    const out  = {};
     for (const id of coinIds) {
       if (data[id]) out[id] = data[id].usd;
     }
@@ -137,11 +222,10 @@ async function fetchCryptoPrices(coinIds) {
 }
 
 async function refreshPrices() {
-  const btn = document.getElementById('refresh-btn');
+  const btn      = document.getElementById('refresh-btn');
   btn.textContent = '↻ Refreshing…';
-  btn.disabled = true;
+  btn.disabled    = true;
 
-  // Stocks
   if (S.stocks.length) {
     if (!S.settings.finnhubKey) {
       toast('Add a Finnhub API key in Settings for live stock prices.', 'error');
@@ -150,14 +234,13 @@ async function refreshPrices() {
       for (const t of tickers) {
         const p = await fetchStockPrice(t);
         if (p !== null) S.prices[t] = p;
-        await delay(220); // respect rate limit
+        await delay(220);
       }
     }
   }
 
-  // Crypto (no API key needed)
   if (S.crypto.length) {
-    const ids = [...new Set(S.crypto.map(c => c.coinId))];
+    const ids    = [...new Set(S.crypto.map(c => c.coinId))];
     const prices = await fetchCryptoPrices(ids);
     Object.assign(S.cryptoPrices, prices);
   }
@@ -167,10 +250,10 @@ async function refreshPrices() {
 
   const now = new Date();
   document.getElementById('last-updated').textContent =
-    `Updated ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    `Prices updated ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 
   btn.textContent = '↻ Refresh Prices';
-  btn.disabled = false;
+  btn.disabled    = false;
   toast('Prices refreshed!', 'success');
 }
 
@@ -182,6 +265,7 @@ function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 function renderAll() {
   renderHeader();
   renderDashboard();
+  renderAccounts();
   renderStocks();
   renderCrypto();
   renderPrivate();
@@ -195,16 +279,34 @@ function renderHeader() {
   const total = totalNetWorth();
   document.getElementById('header-total').textContent = fmt(total);
 
-  const el = document.getElementById('header-change');
-  const snaps = S.snapshots;
+  // Change vs last snapshot
+  const changeEl = document.getElementById('header-change');
+  const snaps    = S.snapshots;
   if (snaps.length) {
     const prev = snaps[snaps.length - 1].totalNetWorth;
     const diff = total - prev;
     const pct  = prev ? (diff / prev) * 100 : 0;
-    el.textContent  = `${fmt(diff)} (${fmtPct(pct)}) since last snapshot`;
-    el.className    = 'total-change ' + (diff >= 0 ? 'pos' : 'neg');
+    changeEl.textContent = `${fmt(diff)} (${fmtPct(pct)}) since last snapshot`;
+    changeEl.className   = 'total-change ' + (diff >= 0 ? 'pos' : 'neg');
   } else {
-    el.textContent = '';
+    changeEl.textContent = '';
+  }
+
+  // Wealth generated
+  const wealth    = wealthGenerated();
+  const wealthEl  = document.getElementById('header-wealth');
+  const wealthPct = document.getElementById('header-wealth-pct');
+  if (wealth !== null) {
+    wealthEl.textContent  = fmt(wealth);
+    wealthEl.className    = 'total-value ' + (wealth >= 0 ? 'pos' : 'neg');
+    const invested        = totalInvested();
+    const pct             = invested ? (wealth / invested) * 100 : 0;
+    wealthPct.textContent = fmtPct(pct);
+    wealthPct.className   = 'total-change ' + (wealth >= 0 ? 'pos' : 'neg');
+  } else {
+    wealthEl.textContent  = '—';
+    wealthEl.className    = 'total-value';
+    wealthPct.textContent = '';
   }
 }
 
@@ -212,44 +314,57 @@ function renderHeader() {
 // RENDER — DASHBOARD
 // ============================================================
 function renderDashboard() {
-  const total = totalNetWorth();
-  const sTotal  = stocksTotal();
-  const cTotal  = cryptoTotal();
-  const reTotal = privateTotal('real-estate');
-  const peTotal = privateTotal('private-equity');
-  const suTotal = privateTotal('startup-equity');
+  const total    = totalNetWorth();
+  const sTotal   = stocksTotal();
+  const cTotal   = cryptoTotal();
+  const pvTotal  = privateTotal();
+  const margin   = totalMarginDebt();
+  const wealth   = wealthGenerated();
+  const invested = totalInvested();
 
   const pct = v => total > 0 ? ((v / total) * 100).toFixed(1) + '%' : '0%';
 
-  set('cat-stocks-val',    fmt(sTotal));  set('cat-stocks-pct',    pct(sTotal));
-  set('cat-crypto-val',    fmt(cTotal));  set('cat-crypto-pct',    pct(cTotal));
-  set('cat-realestate-val',fmt(reTotal)); set('cat-realestate-pct',pct(reTotal));
-  set('cat-pe-val',        fmt(peTotal)); set('cat-pe-pct',        pct(peTotal));
-  set('cat-startup-val',   fmt(suTotal)); set('cat-startup-pct',   pct(suTotal));
+  set('cat-stocks-val',  fmt(sTotal));   set('cat-stocks-pct',  pct(sTotal));
+  set('cat-crypto-val',  fmt(cTotal));   set('cat-crypto-pct',  pct(cTotal));
+  set('cat-private-val', fmt(pvTotal));  set('cat-private-pct', pct(pvTotal));
+  set('cat-margin-val',  fmt(margin));
 
-  // Donut
-  const ctx = document.getElementById('allocation-chart').getContext('2d');
+  if (wealth !== null) {
+    const wpct = invested ? (wealth / invested) * 100 : 0;
+    set('cat-wealth-val', `<span class="${wealth >= 0 ? 'pos' : 'neg'}">${fmt(wealth)}</span>`);
+    set('cat-wealth-pct', `<span class="${wealth >= 0 ? 'pos' : 'neg'}">${fmtPct(wpct)}</span>`);
+  } else {
+    set('cat-wealth-val', '<span style="color:var(--muted);font-size:13px">Add cost basis to track</span>');
+    set('cat-wealth-pct', '');
+  }
+
+  // Donut chart
+  const theme = getChartTheme();
+  const ctx   = document.getElementById('allocation-chart').getContext('2d');
   if (charts.donut) charts.donut.destroy();
-  const vals = [sTotal, cTotal, reTotal, peTotal, suTotal];
+  const vals    = [sTotal, cTotal, pvTotal];
   const hasData = vals.some(v => v > 0);
-  charts.donut = new Chart(ctx, {
+  charts.donut  = new Chart(ctx, {
     type: 'doughnut',
     data: {
-      labels: ['Stocks','Crypto','Real Estate','Private Equity','Startup Equity'],
+      labels: ['Stocks', 'Crypto', 'Private Funds'],
       datasets: [{
         data: hasData ? vals : [1],
         backgroundColor: hasData
-          ? ['#3b82f6','#f59e0b','#059669','#7c3aed','#db2777']
-          : ['#e2e8f0'],
+          ? ['#3b82f6', '#f59e0b', '#8b5cf6']
+          : [theme.grid],
         borderWidth: 2,
-        borderColor: '#fff',
+        borderColor: 'transparent',
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 12, padding: 10 } },
+        legend: {
+          position: 'bottom',
+          labels: { font: { size: 11 }, boxWidth: 12, padding: 10, color: theme.tick }
+        },
         tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${fmt(ctx.raw)}` } }
       }
     }
@@ -259,13 +374,105 @@ function renderDashboard() {
 }
 
 // ============================================================
+// RENDER — ACCOUNTS
+// ============================================================
+function renderAccounts() {
+  const container = document.getElementById('accounts-container');
+
+  if (!S.accounts.length) {
+    container.innerHTML = `<div class="card">
+      <p style="text-align:center;color:var(--muted);padding:36px">
+        No accounts yet — add one above to track holdings, deposits, and margin debt per broker.
+      </p>
+    </div>`;
+    return;
+  }
+
+  const cards = S.accounts.map(a => {
+    const holdings   = brokerHoldings(a.broker);
+    const costBasis  = brokerCostBasis(a.broker);
+    const marginDebt = a.marginDebt || 0;
+    const equity     = holdings - marginDebt;
+    const deposited  = a.deposited || null;
+    const wealthGain = (deposited && holdings > 0) ? holdings - deposited : null;
+    const wealthPct  = (wealthGain !== null && deposited) ? (wealthGain / deposited) * 100 : null;
+    const costGain   = (costBasis > 0 && holdings > 0) ? holdings - costBasis : null;
+    const costPct    = (costGain !== null && costBasis) ? (costGain / costBasis) * 100 : null;
+
+    const brokerBadge = {
+      'Chase':     'badge-chase',
+      'E-Trade':   'badge-etrade',
+      'Robinhood': 'badge-robinhood',
+      'Other':     'badge-other',
+    }[a.broker] || 'badge-other';
+
+    const label    = a.label ? `<div class="account-card-label">${a.label}</div>` : '';
+    const updated  = a.updatedAt ? `<span class="account-card-updated">${fmtRelative(a.updatedAt)}</span>` : '';
+
+    const wealthRow = wealthGain !== null
+      ? `<div class="account-wealth-row">
+           <span>Deposited: ${fmt(deposited)}</span>
+           <span class="${wealthGain >= 0 ? 'pos' : 'neg'}">${fmt(wealthGain)} (${fmtPct(wealthPct)})</span>
+         </div>`
+      : costGain !== null
+        ? `<div class="account-wealth-row">
+             <span>Cost basis: ${fmt(costBasis)}</span>
+             <span class="${costGain >= 0 ? 'pos' : 'neg'}">${fmt(costGain)} (${fmtPct(costPct)})</span>
+           </div>`
+        : '';
+
+    return `<div class="account-card">
+      <div class="account-card-head">
+        <div class="account-card-title">
+          <span class="badge ${brokerBadge}">${a.broker}</span>
+          <div>
+            <strong>${a.label || a.broker}</strong>
+            ${label ? '' : ''}
+          </div>
+        </div>
+        ${updated}
+      </div>
+
+      <div class="account-metrics">
+        <div class="account-metric">
+          <div class="account-metric-label">Holdings</div>
+          <div class="account-metric-value">${holdings > 0 ? fmt(holdings) : '<span style="color:var(--muted)">—</span>'}</div>
+        </div>
+        <div class="account-metric">
+          <div class="account-metric-label">Deposited</div>
+          <div class="account-metric-value">${deposited ? fmt(deposited) : '<span style="color:var(--muted)">—</span>'}</div>
+        </div>
+        <div class="account-metric">
+          <div class="account-metric-label">Margin Debt</div>
+          <div class="account-metric-value ${marginDebt > 0 ? 'neg' : ''}">${marginDebt > 0 ? fmt(marginDebt) : '$0'}</div>
+        </div>
+      </div>
+
+      <div class="account-equity-row">
+        <span class="account-equity-label">Real Equity</span>
+        <span class="account-equity-value">${fmt(equity)}</span>
+      </div>
+
+      ${wealthRow}
+
+      <div class="account-card-actions">
+        <button class="icon-btn" onclick="editAccount('${a.id}')" title="Edit">✏</button>
+        <button class="icon-btn" onclick="delAccount('${a.id}')" title="Delete">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  container.innerHTML = `<div class="accounts-grid">${cards}</div>`;
+}
+
+// ============================================================
 // RENDER — STOCKS
 // ============================================================
 function renderStocks() {
   const tbody = document.getElementById('stocks-tbody');
-  let rows = S.stocks;
+  let rows    = S.stocks;
   if (S.filters.broker !== 'all') rows = rows.filter(s => s.broker === S.filters.broker);
-  if (S.filters.type  !== 'all') rows = rows.filter(s => s.type   === S.filters.type);
+  if (S.filters.type   !== 'all') rows = rows.filter(s => s.type   === S.filters.type);
 
   if (!rows.length) {
     tbody.innerHTML = `<tr class="empty"><td colspan="9">${
@@ -285,14 +492,14 @@ function renderStocks() {
     const plPct = (price != null && s.costBasis) ? ((price - s.costBasis) / s.costBasis) * 100 : null;
 
     const brokerBadge = {
-      'Chase':    'badge-chase',
-      'E-Trade':  'badge-etrade',
-      'Robinhood':'badge-robinhood',
-      'Other':    'badge-other',
+      'Chase':     'badge-chase',
+      'E-Trade':   'badge-etrade',
+      'Robinhood': 'badge-robinhood',
+      'Other':     'badge-other',
     }[s.broker] || 'badge-other';
 
-    const typeBadge = s.type === 'long-term' ? 'badge-long' : 'badge-short';
-    const typeLabel = s.type === 'long-term' ? 'Long-term' : 'Short-term';
+    const typeBadge  = s.type === 'long-term' ? 'badge-long' : 'badge-short';
+    const typeLabel  = s.type === 'long-term' ? 'Long-term' : 'Short-term';
 
     return `<tr>
       <td><strong>${s.ticker}</strong></td>
@@ -308,7 +515,7 @@ function renderStocks() {
       }</td>
       <td>
         <button class="icon-btn" onclick="editStock('${s.id}')" title="Edit">✏</button>
-        <button class="icon-btn" onclick="delStock('${s.id}')" title="Delete">✕</button>
+        <button class="icon-btn" onclick="delStock('${s.id}')"  title="Delete">✕</button>
       </td>
     </tr>`;
   }).join('');
@@ -352,7 +559,7 @@ function renderCrypto() {
       }</td>
       <td>
         <button class="icon-btn" onclick="editCrypto('${c.id}')" title="Edit">✏</button>
-        <button class="icon-btn" onclick="delCrypto('${c.id}')" title="Delete">✕</button>
+        <button class="icon-btn" onclick="delCrypto('${c.id}')"  title="Delete">✕</button>
       </td>
     </tr>`;
   }).join('');
@@ -367,53 +574,108 @@ function renderPrivate() {
   const container = document.getElementById('private-groups');
 
   if (!S.private.length) {
-    container.innerHTML = `<div class="card"><p style="text-align:center;color:var(--muted);padding:36px">No investments yet — add one above.</p></div>`;
+    container.innerHTML = `<div class="card">
+      <p style="text-align:center;color:var(--muted);padding:36px">
+        No investments yet — add one above.
+      </p>
+    </div>`;
     return;
   }
 
-  const cats = [
-    { key: 'real-estate',    label: 'Real Estate',    badge: 'badge-re' },
-    { key: 'private-equity', label: 'Private Equity', badge: 'badge-pe' },
-    { key: 'startup-equity', label: 'Startup Equity', badge: 'badge-startup' },
-    { key: 'other',          label: 'Other',          badge: 'badge-other2' },
+  const fundTypes = [
+    { key: 'real-estate-fund', label: 'Real Estate Funds',      badge: 'badge-re-fund' },
+    { key: 'pe-fund',          label: 'Private Equity Funds',   badge: 'badge-pe-fund' },
+    { key: 'venture-fund',     label: 'Venture / Startup Funds',badge: 'badge-vc-fund' },
+    { key: 'other',            label: 'Other',                  badge: 'badge-other2'  },
+    // Backward compat: old categories
+    { key: 'real-estate',    label: 'Real Estate',    badge: 'badge-re-fund' },
+    { key: 'private-equity', label: 'Private Equity', badge: 'badge-pe-fund' },
+    { key: 'startup-equity', label: 'Startup Equity', badge: 'badge-vc-fund' },
   ];
 
-  container.innerHTML = cats.map(cat => {
-    const items = S.private.filter(p => p.category === cat.key);
+  // Group items — deduplicate display if old + new categories overlap
+  const seen = new Set();
+  container.innerHTML = fundTypes.map(ft => {
+    const items = S.private.filter(p => {
+      const key = p.fundType || p.category || 'other';
+      return key === ft.key;
+    });
     if (!items.length) return '';
 
-    const total = items.reduce((s, p) => s + p.currentValue, 0);
+    const totalVal    = items.reduce((s, p) => s + (p.currentValue || 0), 0);
+    const totalCalled = items.reduce((s, p) => s + (p.called || 0), 0);
 
     const rows = items.map(p => {
-      const pl    = p.costBasis ? p.currentValue - p.costBasis : null;
-      const plPct = p.costBasis ? (pl / p.costBasis) * 100 : null;
+      const called        = p.called || 0;
+      const commitment    = p.commitment || 0;
+      const distributions = p.distributions || 0;
+      const currentValue  = p.currentValue || 0;
+      const uncalled      = Math.max(commitment - called, 0);
+      const moic          = called > 0 ? ((currentValue + distributions) / called).toFixed(2) + 'x' : '—';
+      const updated       = p.updatedAt ? fmtRelative(p.updatedAt) : '';
+
+      // Check if this is an old-format item (no commitment fields)
+      const isOldFormat = !p.commitment && !p.called && !p.fundType;
+
+      if (isOldFormat) {
+        const pl    = p.costBasis ? currentValue - p.costBasis : null;
+        const plPct = p.costBasis ? (pl / p.costBasis) * 100 : null;
+        return `<tr>
+          <td>
+            <strong>${p.name}</strong>
+            ${p.notes ? `<br><span style="color:var(--muted);font-size:11px">${p.notes}</span>` : ''}
+          </td>
+          <td colspan="3" style="color:var(--muted);font-size:12px">Legacy entry — re-add to use fund model</td>
+          <td>${fmt(currentValue)}</td>
+          <td>${pl != null
+            ? `<span class="${pl >= 0 ? 'pos' : 'neg'}">${fmt(pl)} <small>(${fmtPct(plPct)})</small></span>`
+            : '—'
+          }</td>
+          <td style="color:var(--muted);font-size:11px">${updated}</td>
+          <td>
+            <button class="icon-btn" onclick="editPrivate('${p.id}')" title="Edit">✏</button>
+            <button class="icon-btn" onclick="delPrivate('${p.id}')"  title="Delete">✕</button>
+          </td>
+        </tr>`;
+      }
+
       return `<tr>
-        <td><strong>${p.name}</strong></td>
-        <td>${fmt(p.currentValue)}</td>
-        <td>${p.costBasis ? fmt(p.costBasis) : '—'}</td>
-        <td>${pl != null
-          ? `<span class="${pl >= 0 ? 'pos' : 'neg'}">${fmt(pl)} <small>(${fmtPct(plPct)})</small></span>`
-          : '—'
-        }</td>
-        <td style="color:var(--muted)">${p.notes || '—'}</td>
+        <td>
+          <strong>${p.name}</strong>
+          ${p.manager ? `<br><span style="color:var(--muted);font-size:11px">${p.manager}</span>` : ''}
+        </td>
+        <td>${commitment > 0 ? fmt(commitment) : '—'}</td>
+        <td>${called > 0 ? fmt(called) : '—'}</td>
+        <td>${commitment > 0 ? fmt(uncalled) : '—'}</td>
+        <td>${distributions > 0 ? fmt(distributions) : '$0'}</td>
+        <td><strong>${fmt(currentValue)}</strong></td>
+        <td>${moic}</td>
+        <td style="color:var(--muted);font-size:11px">${updated}</td>
         <td>
           <button class="icon-btn" onclick="editPrivate('${p.id}')" title="Edit">✏</button>
-          <button class="icon-btn" onclick="delPrivate('${p.id}')" title="Delete">✕</button>
+          <button class="icon-btn" onclick="delPrivate('${p.id}')"  title="Delete">✕</button>
         </td>
       </tr>`;
     }).join('');
 
     return `<div class="card priv-group">
       <div class="priv-group-head">
-        <h3><span class="badge ${cat.badge}">${cat.label}</span></h3>
-        <span class="priv-group-total">${fmt(total)}</span>
+        <h3><span class="badge ${ft.badge}">${ft.label}</span></h3>
+        <span class="priv-group-total">${fmt(totalVal)}</span>
       </div>
       <div class="table-wrap">
         <table class="tbl">
           <thead>
             <tr>
-              <th>Name</th><th>Current Value</th><th>Cost Basis</th>
-              <th>P/L</th><th>Notes</th><th></th>
+              <th>Fund</th>
+              <th>Commitment</th>
+              <th>Called</th>
+              <th>Uncalled</th>
+              <th>Distributions</th>
+              <th>Current Value</th>
+              <th>MOIC</th>
+              <th>Updated</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -428,22 +690,21 @@ function renderPrivate() {
 // ============================================================
 function renderHistory() {
   const snaps = [...S.snapshots].sort((a, b) => new Date(a.date) - new Date(b.date));
-
   set('stat-count', snaps.length);
 
   if (snaps.length >= 2) {
-    const first = snaps[0];
-    const last  = snaps[snaps.length - 1];
+    const first  = snaps[0];
+    const last   = snaps[snaps.length - 1];
     const growth = last.totalNetWorth - first.totalNetWorth;
     const pct    = (growth / first.totalNetWorth) * 100;
 
     const gEl = document.getElementById('stat-growth');
     gEl.textContent = fmt(growth);
-    gEl.className = 'stat-value ' + (growth >= 0 ? 'pos' : 'neg');
+    gEl.className   = 'stat-value ' + (growth >= 0 ? 'pos' : 'neg');
 
     const pEl = document.getElementById('stat-pct');
     pEl.textContent = fmtPct(pct);
-    pEl.className = 'stat-value ' + (pct >= 0 ? 'pos' : 'neg');
+    pEl.className   = 'stat-value ' + (pct >= 0 ? 'pos' : 'neg');
 
     set('stat-first',  fmt(first.totalNetWorth));
     set('stat-latest', fmt(last.totalNetWorth));
@@ -451,10 +712,9 @@ function renderHistory() {
 
   drawHistoryChart('history-chart', 240);
 
-  // Snapshot table (newest first)
   const tbody = document.getElementById('snapshots-tbody');
   if (!snaps.length) {
-    tbody.innerHTML = `<tr class="empty"><td colspan="9">No snapshots yet — click "Save Snapshot" to record your current net worth.</td></tr>`;
+    tbody.innerHTML = `<tr class="empty"><td colspan="8">No snapshots yet — click "Save Snapshot" to record your current net worth.</td></tr>`;
     return;
   }
 
@@ -462,17 +722,15 @@ function renderHistory() {
   tbody.innerHTML = reversed.map((snap, i) => {
     const prev   = reversed[i + 1];
     const change = prev ? snap.totalNetWorth - prev.totalNetWorth : null;
-    const d      = new Date(snap.date);
-    const label  = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const label  = fmtDate(snap.date);
 
     return `<tr>
       <td>${label}</td>
       <td><strong>${fmt(snap.totalNetWorth)}</strong></td>
       <td>${fmt(snap.breakdown?.stocks)}</td>
       <td>${fmt(snap.breakdown?.crypto)}</td>
-      <td>${fmt(snap.breakdown?.realEstate)}</td>
-      <td>${fmt(snap.breakdown?.privateEquity)}</td>
-      <td>${fmt(snap.breakdown?.startupEquity)}</td>
+      <td>${fmt(snap.breakdown?.privateFunds)}</td>
+      <td>${snap.breakdown?.marginDebt ? `<span class="neg">${fmt(snap.breakdown.marginDebt)}</span>` : '$0'}</td>
       <td>${change != null
         ? `<span class="${change >= 0 ? 'pos' : 'neg'}">${fmt(change)}</span>`
         : '—'
@@ -494,8 +752,8 @@ function drawHistoryChart(canvasId, height) {
   if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
 
   const snaps = [...S.snapshots].sort((a, b) => new Date(a.date) - new Date(b.date));
-
-  const ctx = canvas.getContext('2d');
+  const theme = getChartTheme();
+  const ctx   = canvas.getContext('2d');
 
   if (snaps.length < 2) {
     charts[canvasId] = new Chart(ctx, {
@@ -503,10 +761,7 @@ function drawHistoryChart(canvasId, height) {
       data: { labels: [], datasets: [{ data: [] }] },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: { enabled: false },
-        },
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
         scales: { x: { display: false }, y: { display: false } },
       }
     });
@@ -523,7 +778,7 @@ function drawHistoryChart(canvasId, height) {
         label: 'Net Worth',
         data: snaps.map(s => s.totalNetWorth),
         borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59,130,246,0.08)',
+        backgroundColor: 'rgba(59,130,246,0.12)',
         fill: true,
         tension: 0.35,
         pointRadius: 4,
@@ -537,17 +792,22 @@ function drawHistoryChart(canvasId, height) {
       plugins: {
         legend: { display: false },
         tooltip: {
+          backgroundColor: theme.tooltip,
+          titleColor: theme.tooltipText,
+          bodyColor: theme.tooltipText,
+          borderColor: theme.grid,
+          borderWidth: 1,
           callbacks: { label: ctx => ` ${fmt(ctx.raw)}` }
         }
       },
       scales: {
         y: {
-          ticks: { callback: v => fmt(v), font: { size: 11 } },
-          grid: { color: '#f1f5f9' },
+          ticks: { callback: v => fmt(v), font: { size: 11 }, color: theme.tick },
+          grid:  { color: theme.grid },
         },
         x: {
-          ticks: { font: { size: 11 } },
-          grid: { display: false },
+          ticks: { font: { size: 11 }, color: theme.tick },
+          grid:  { display: false },
         }
       }
     }
@@ -559,15 +819,14 @@ function drawHistoryChart(canvasId, height) {
 // ============================================================
 function takeSnapshot() {
   const snap = {
-    id: uid(),
-    date: new Date().toISOString(),
+    id:            uid(),
+    date:          new Date().toISOString(),
     totalNetWorth: totalNetWorth(),
     breakdown: {
-      stocks:        stocksTotal(),
-      crypto:        cryptoTotal(),
-      realEstate:    privateTotal('real-estate'),
-      privateEquity: privateTotal('private-equity'),
-      startupEquity: privateTotal('startup-equity'),
+      stocks:       stocksTotal(),
+      crypto:       cryptoTotal(),
+      privateFunds: privateTotal(),
+      marginDebt:   totalMarginDebt(),
     }
   };
   S.snapshots.push(snap);
@@ -582,13 +841,13 @@ function takeSnapshot() {
 function editStock(id) {
   const s = S.stocks.find(s => s.id === id);
   if (!s) return;
-  document.getElementById('s-ticker').value    = s.ticker;
-  document.getElementById('s-shares').value    = s.shares;
-  document.getElementById('s-broker').value    = s.broker;
-  document.getElementById('s-type').value      = s.type;
-  document.getElementById('s-cost').value      = s.costBasis || '';
-  document.getElementById('s-notes').value     = s.notes || '';
-  document.getElementById('s-editing-id').value = id;
+  el('s-ticker').value      = s.ticker;
+  el('s-shares').value      = s.shares;
+  el('s-broker').value      = s.broker;
+  el('s-type').value        = s.type;
+  el('s-cost').value        = s.costBasis || '';
+  el('s-notes').value       = s.notes || '';
+  el('s-editing-id').value  = id;
   document.getElementById('stock-form-title').textContent = 'Edit Stock';
   showForm('stock-form');
 }
@@ -606,12 +865,12 @@ function delStock(id) {
 function editCrypto(id) {
   const c = S.crypto.find(c => c.id === id);
   if (!c) return;
-  document.getElementById('c-coinid').value      = c.coinId;
-  document.getElementById('c-name').value        = c.name;
-  document.getElementById('c-amount').value      = c.amount;
-  document.getElementById('c-cost').value        = c.costBasis || '';
-  document.getElementById('c-notes').value       = c.notes || '';
-  document.getElementById('c-editing-id').value  = id;
+  el('c-coinid').value      = c.coinId;
+  el('c-name').value        = c.name;
+  el('c-amount').value      = c.amount;
+  el('c-cost').value        = c.costBasis || '';
+  el('c-notes').value       = c.notes || '';
+  el('c-editing-id').value  = id;
   document.getElementById('crypto-form-title').textContent = 'Edit Crypto';
   showForm('crypto-form');
 }
@@ -629,12 +888,15 @@ function delCrypto(id) {
 function editPrivate(id) {
   const p = S.private.find(p => p.id === id);
   if (!p) return;
-  document.getElementById('p-name').value        = p.name;
-  document.getElementById('p-category').value    = p.category;
-  document.getElementById('p-value').value       = p.currentValue;
-  document.getElementById('p-cost').value        = p.costBasis || '';
-  document.getElementById('p-notes').value       = p.notes || '';
-  document.getElementById('p-editing-id').value  = id;
+  el('p-name').value          = p.name;
+  el('p-manager').value       = p.manager || '';
+  el('p-fund-type').value     = p.fundType || p.category || 'real-estate-fund';
+  el('p-commitment').value    = p.commitment || '';
+  el('p-called').value        = p.called || '';
+  el('p-distributions').value = p.distributions || '';
+  el('p-value').value         = p.currentValue || '';
+  el('p-notes').value         = p.notes || '';
+  el('p-editing-id').value    = id;
   document.getElementById('private-form-title').textContent = 'Edit Investment';
   showForm('private-form');
 }
@@ -644,6 +906,29 @@ function delPrivate(id) {
   S.private = S.private.filter(p => p.id !== id);
   save(); renderAll();
   toast('Investment removed.');
+}
+
+// ============================================================
+// CRUD — ACCOUNTS
+// ============================================================
+function editAccount(id) {
+  const a = S.accounts.find(a => a.id === id);
+  if (!a) return;
+  el('a-broker').value     = a.broker;
+  el('a-label').value      = a.label || '';
+  el('a-deposited').value  = a.deposited || '';
+  el('a-margin').value     = a.marginDebt || '';
+  el('a-notes').value      = a.notes || '';
+  el('a-editing-id').value = id;
+  document.getElementById('account-form-title').textContent = 'Edit Account';
+  showForm('account-form');
+}
+
+function delAccount(id) {
+  if (!confirm('Delete this account?')) return;
+  S.accounts = S.accounts.filter(a => a.id !== id);
+  save(); renderAll();
+  toast('Account removed.');
 }
 
 // ============================================================
@@ -670,7 +955,7 @@ function hideForm(id) {
 
 function clearStockForm() {
   ['s-ticker','s-shares','s-cost','s-notes','s-editing-id'].forEach(id => el(id).value = '');
-  el('s-broker').value = 'Chase';
+  el('s-broker').value = 'E-Trade';
   el('s-type').value   = 'long-term';
   document.getElementById('stock-form-title').textContent = 'Add Stock';
 }
@@ -681,19 +966,26 @@ function clearCryptoForm() {
 }
 
 function clearPrivateForm() {
-  ['p-name','p-value','p-cost','p-notes','p-editing-id'].forEach(id => el(id).value = '');
-  el('p-category').value = 'real-estate';
-  document.getElementById('private-form-title').textContent = 'Add Investment';
+  ['p-name','p-manager','p-commitment','p-called','p-distributions','p-value','p-notes','p-editing-id']
+    .forEach(id => el(id).value = '');
+  el('p-fund-type').value = 'real-estate-fund';
+  document.getElementById('private-form-title').textContent = 'Add Fund Investment';
+}
+
+function clearAccountForm() {
+  ['a-label','a-deposited','a-margin','a-notes','a-editing-id'].forEach(id => el(id).value = '');
+  el('a-broker').value = 'E-Trade';
+  document.getElementById('account-form-title').textContent = 'Add Account';
 }
 
 // ============================================================
 // UTILITIES
 // ============================================================
-function el(id) { return document.getElementById(id); }
+function el(id)       { return document.getElementById(id); }
 function set(id, html) { document.getElementById(id).innerHTML = html; }
 
 function toast(msg, type = 'info') {
-  const t = document.getElementById('toast');
+  const t   = document.getElementById('toast');
   t.textContent = msg;
   t.className   = `toast show ${type}`;
   clearTimeout(t._timer);
@@ -721,6 +1013,17 @@ function init() {
   el('snapshot-btn').addEventListener('click', takeSnapshot);
   el('history-snapshot-btn').addEventListener('click', takeSnapshot);
 
+  // Dark mode toggle
+  el('dark-mode-toggle').checked = S.settings.darkMode !== false;
+  el('dark-mode-toggle').addEventListener('change', e => {
+    S.settings.darkMode = e.target.checked;
+    applyTheme(S.settings.darkMode);
+    save();
+    // Redraw charts with new theme colors
+    renderDashboard();
+    renderHistory();
+  });
+
   // ---- STOCKS ----
   el('add-stock-toggle').addEventListener('click', () => {
     const f = el('stock-form');
@@ -736,13 +1039,13 @@ function init() {
   });
 
   el('save-stock-btn').addEventListener('click', () => {
-    const ticker   = el('s-ticker').value.trim().toUpperCase();
-    const shares   = parseFloat(el('s-shares').value);
-    const broker   = el('s-broker').value;
-    const type     = el('s-type').value;
-    const costBasis= parseFloat(el('s-cost').value) || null;
-    const notes    = el('s-notes').value.trim();
-    const editId   = el('s-editing-id').value;
+    const ticker    = el('s-ticker').value.trim().toUpperCase();
+    const shares    = parseFloat(el('s-shares').value);
+    const broker    = el('s-broker').value;
+    const type      = el('s-type').value;
+    const costBasis = parseFloat(el('s-cost').value) || null;
+    const notes     = el('s-notes').value.trim();
+    const editId    = el('s-editing-id').value;
 
     if (!ticker || isNaN(shares) || shares <= 0) {
       toast('Enter a valid ticker and share count.', 'error'); return;
@@ -759,7 +1062,6 @@ function init() {
     hideForm('stock-form'); clearStockForm();
     toast(editId ? 'Stock updated!' : 'Stock added!', 'success');
 
-    // Auto-fetch price for new stock
     if (!editId && S.settings.finnhubKey) {
       fetchStockPrice(ticker).then(p => {
         if (p !== null) { S.prices[ticker] = p; save(); renderAll(); }
@@ -767,7 +1069,7 @@ function init() {
     }
   });
 
-  // Filters
+  // Stock filters
   document.querySelectorAll('[data-broker]').forEach(b =>
     b.addEventListener('click', () => {
       document.querySelectorAll('[data-broker]').forEach(x => x.classList.remove('active'));
@@ -801,12 +1103,12 @@ function init() {
   });
 
   el('save-crypto-btn').addEventListener('click', () => {
-    const coinId   = el('c-coinid').value.trim().toLowerCase();
-    const name     = el('c-name').value.trim();
-    const amount   = parseFloat(el('c-amount').value);
-    const costBasis= parseFloat(el('c-cost').value) || null;
-    const notes    = el('c-notes').value.trim();
-    const editId   = el('c-editing-id').value;
+    const coinId    = el('c-coinid').value.trim().toLowerCase();
+    const name      = el('c-name').value.trim();
+    const amount    = parseFloat(el('c-amount').value);
+    const costBasis = parseFloat(el('c-cost').value) || null;
+    const notes     = el('c-notes').value.trim();
+    const editId    = el('c-editing-id').value;
 
     if (!coinId || !name || isNaN(amount) || amount <= 0) {
       toast('Fill in all required fields.', 'error'); return;
@@ -823,7 +1125,6 @@ function init() {
     hideForm('crypto-form'); clearCryptoForm();
     toast(editId ? 'Crypto updated!' : 'Crypto added!', 'success');
 
-    // Auto-fetch price
     if (!editId) {
       fetchCryptoPrices([coinId]).then(prices => {
         Object.assign(S.cryptoPrices, prices);
@@ -847,27 +1148,74 @@ function init() {
   });
 
   el('save-private-btn').addEventListener('click', () => {
-    const name         = el('p-name').value.trim();
-    const category     = el('p-category').value;
-    const currentValue = parseFloat(el('p-value').value);
-    const costBasis    = parseFloat(el('p-cost').value) || null;
-    const notes        = el('p-notes').value.trim();
-    const editId       = el('p-editing-id').value;
+    const name          = el('p-name').value.trim();
+    const manager       = el('p-manager').value.trim();
+    const fundType      = el('p-fund-type').value;
+    const commitment    = parseFloat(el('p-commitment').value) || 0;
+    const called        = parseFloat(el('p-called').value) || 0;
+    const distributions = parseFloat(el('p-distributions').value) || 0;
+    const currentValue  = parseFloat(el('p-value').value);
+    const notes         = el('p-notes').value.trim();
+    const editId        = el('p-editing-id').value;
 
     if (!name || isNaN(currentValue) || currentValue < 0) {
-      toast('Enter a name and a valid value.', 'error'); return;
+      toast('Enter a fund name and current value.', 'error'); return;
     }
+
+    const record = {
+      name, manager, fundType, commitment, called, distributions,
+      currentValue, notes, updatedAt: new Date().toISOString()
+    };
 
     if (editId) {
       const i = S.private.findIndex(p => p.id === editId);
-      if (i !== -1) S.private[i] = { ...S.private[i], name, category, currentValue, costBasis, notes };
+      if (i !== -1) S.private[i] = { ...S.private[i], ...record };
     } else {
-      S.private.push({ id: uid(), name, category, currentValue, costBasis, notes });
+      S.private.push({ id: uid(), ...record });
     }
 
     save(); renderAll();
     hideForm('private-form'); clearPrivateForm();
     toast(editId ? 'Investment updated!' : 'Investment added!', 'success');
+  });
+
+  // ---- ACCOUNTS ----
+  el('add-account-toggle').addEventListener('click', () => {
+    const f = el('account-form');
+    if (f.style.display === 'none' || !f.style.display) {
+      clearAccountForm(); showForm('account-form');
+    } else {
+      hideForm('account-form');
+    }
+  });
+
+  el('cancel-account-btn').addEventListener('click', () => {
+    hideForm('account-form'); clearAccountForm();
+  });
+
+  el('save-account-btn').addEventListener('click', () => {
+    const broker     = el('a-broker').value;
+    const label      = el('a-label').value.trim();
+    const deposited  = parseFloat(el('a-deposited').value) || null;
+    const marginDebt = parseFloat(el('a-margin').value) || 0;
+    const notes      = el('a-notes').value.trim();
+    const editId     = el('a-editing-id').value;
+
+    const record = {
+      broker, label, deposited, marginDebt, notes,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (editId) {
+      const i = S.accounts.findIndex(a => a.id === editId);
+      if (i !== -1) S.accounts[i] = { ...S.accounts[i], ...record };
+    } else {
+      S.accounts.push({ id: uid(), ...record });
+    }
+
+    save(); renderAll();
+    hideForm('account-form'); clearAccountForm();
+    toast(editId ? 'Account updated!' : 'Account added!', 'success');
   });
 
   // ---- SETTINGS ----
@@ -882,13 +1230,14 @@ function init() {
   el('export-btn').addEventListener('click', () => {
     const data = {
       stocks: S.stocks, crypto: S.crypto, private: S.private,
-      snapshots: S.snapshots, prices: S.prices, cryptoPrices: S.cryptoPrices,
+      accounts: S.accounts, snapshots: S.snapshots,
+      prices: S.prices, cryptoPrices: S.cryptoPrices,
       exportedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    a.href = url;
+    a.href     = url;
     a.download = `net-worth-${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
@@ -907,6 +1256,7 @@ function init() {
         if (d.stocks)       S.stocks       = d.stocks;
         if (d.crypto)       S.crypto       = d.crypto;
         if (d.private)      S.private      = d.private;
+        if (d.accounts)     S.accounts     = d.accounts;
         if (d.snapshots)    S.snapshots    = d.snapshots;
         if (d.prices)       S.prices       = d.prices;
         if (d.cryptoPrices) S.cryptoPrices = d.cryptoPrices;
@@ -932,10 +1282,10 @@ function init() {
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
   load();
+  applyTheme(S.settings.darkMode !== false);
   init();
   renderAll();
 
-  // Auto-fetch crypto prices on load (no key needed)
   if (S.crypto.length) {
     const ids = [...new Set(S.crypto.map(c => c.coinId))];
     fetchCryptoPrices(ids).then(prices => {

@@ -21,6 +21,11 @@
           <span class="total-value" id="header-total">$0</span>
           <span class="total-change" id="header-change"></span>
         </div>
+        <div class="total-display">
+          <span class="total-label">Wealth Generated</span>
+          <span class="total-value" id="header-wealth">—</span>
+          <span class="total-change" id="header-wealth-pct"></span>
+        </div>
         <button class="btn btn-ghost" id="refresh-btn">↻ Refresh Prices</button>
         <button class="btn btn-primary" id="snapshot-btn">Save Snapshot</button>
       </div>
@@ -29,6 +34,7 @@
 
   <nav class="tab-nav">
     <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="accounts">Accounts</button>
     <button class="tab" data-tab="stocks">Stocks</button>
     <button class="tab" data-tab="crypto">Crypto</button>
     <button class="tab" data-tab="private">Private</button>
@@ -52,19 +58,19 @@
           <div class="cat-pct" id="cat-crypto-pct">0%</div>
         </div>
         <div class="cat-card">
-          <div class="cat-label">Real Estate</div>
-          <div class="cat-value" id="cat-realestate-val">$0</div>
-          <div class="cat-pct" id="cat-realestate-pct">0%</div>
+          <div class="cat-label">Private Funds</div>
+          <div class="cat-value" id="cat-private-val">$0</div>
+          <div class="cat-pct" id="cat-private-pct">0%</div>
+        </div>
+        <div class="cat-card cat-wealth">
+          <div class="cat-label">Wealth Generated</div>
+          <div class="cat-value" id="cat-wealth-val">—</div>
+          <div class="cat-pct" id="cat-wealth-pct">—</div>
         </div>
         <div class="cat-card">
-          <div class="cat-label">Private Equity</div>
-          <div class="cat-value" id="cat-pe-val">$0</div>
-          <div class="cat-pct" id="cat-pe-pct">0%</div>
-        </div>
-        <div class="cat-card">
-          <div class="cat-label">Startup Equity</div>
-          <div class="cat-value" id="cat-startup-val">$0</div>
-          <div class="cat-pct" id="cat-startup-pct">0%</div>
+          <div class="cat-label">Margin Debt</div>
+          <div class="cat-value neg" id="cat-margin-val">$0</div>
+          <div class="cat-pct" id="cat-margin-note">across all accounts</div>
         </div>
       </div>
 
@@ -82,6 +88,52 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- ACCOUNTS -->
+    <section id="tab-accounts" class="tab-content">
+      <div class="section-header">
+        <h2>Brokerage Accounts</h2>
+        <button class="btn btn-primary" id="add-account-toggle">+ Add Account</button>
+      </div>
+
+      <div class="card form-card" id="account-form" style="display:none">
+        <h3 id="account-form-title">Add Account</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Broker</label>
+            <select id="a-broker">
+              <option value="E-Trade">E-Trade</option>
+              <option value="Chase">Chase</option>
+              <option value="Robinhood">Robinhood</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Account Label <em>(optional)</em></label>
+            <input type="text" id="a-label" placeholder="e.g. Individual Margin">
+          </div>
+          <div class="form-group">
+            <label>Total Deposited ($) <em>(optional)</em></label>
+            <input type="number" id="a-deposited" placeholder="50000" min="0" step="any">
+          </div>
+          <div class="form-group">
+            <label>Margin Debt ($)</label>
+            <input type="number" id="a-margin" placeholder="0" min="0" step="any">
+          </div>
+          <div class="form-group form-span2">
+            <label>Notes <em>(optional)</em></label>
+            <input type="text" id="a-notes" placeholder="Optional">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="save-account-btn">Save</button>
+          <button class="btn btn-ghost" id="cancel-account-btn">Cancel</button>
+        </div>
+        <input type="hidden" id="a-editing-id">
+      </div>
+
+      <div id="accounts-container"></div>
     </section>
 
     <!-- STOCKS -->
@@ -105,8 +157,8 @@
           <div class="form-group">
             <label>Broker</label>
             <select id="s-broker">
-              <option value="Chase">Chase</option>
               <option value="E-Trade">E-Trade</option>
+              <option value="Chase">Chase</option>
               <option value="Robinhood">Robinhood</option>
               <option value="Other">Other</option>
             </select>
@@ -139,8 +191,8 @@
           <div class="filter-group">
             <span class="filter-label">Broker:</span>
             <button class="pill active" data-broker="all">All</button>
-            <button class="pill" data-broker="Chase">Chase</button>
             <button class="pill" data-broker="E-Trade">E-Trade</button>
+            <button class="pill" data-broker="Chase">Chase</button>
             <button class="pill" data-broker="Robinhood">Robinhood</button>
             <button class="pill" data-broker="Other">Other</button>
           </div>
@@ -253,28 +305,40 @@
       </div>
 
       <div class="card form-card" id="private-form" style="display:none">
-        <h3 id="private-form-title">Add Investment</h3>
+        <h3 id="private-form-title">Add Fund Investment</h3>
         <div class="form-grid">
           <div class="form-group">
-            <label>Name</label>
-            <input type="text" id="p-name" placeholder="123 Main St">
+            <label>Fund Name</label>
+            <input type="text" id="p-name" placeholder="Blackstone Real Estate Fund XII">
           </div>
           <div class="form-group">
-            <label>Category</label>
-            <select id="p-category">
-              <option value="real-estate">Real Estate</option>
-              <option value="private-equity">Private Equity</option>
-              <option value="startup-equity">Startup Equity</option>
+            <label>Fund Manager <em>(optional)</em></label>
+            <input type="text" id="p-manager" placeholder="Blackstone">
+          </div>
+          <div class="form-group">
+            <label>Fund Type</label>
+            <select id="p-fund-type">
+              <option value="real-estate-fund">Real Estate Fund</option>
+              <option value="pe-fund">Private Equity Fund</option>
+              <option value="venture-fund">Venture / Startup Fund</option>
               <option value="other">Other</option>
             </select>
           </div>
           <div class="form-group">
-            <label>Current Value ($)</label>
-            <input type="number" id="p-value" placeholder="500000" min="0" step="any">
+            <label>Total Commitment ($)</label>
+            <input type="number" id="p-commitment" placeholder="100000" min="0" step="any">
           </div>
           <div class="form-group">
-            <label>Cost Basis ($) <em>(optional)</em></label>
-            <input type="number" id="p-cost" placeholder="400000" min="0" step="any">
+            <label>Called Capital ($)</label>
+            <input type="number" id="p-called" placeholder="60000" min="0" step="any">
+          </div>
+          <div class="form-group">
+            <label>Distributions ($)</label>
+            <input type="number" id="p-distributions" placeholder="0" min="0" step="any">
+          </div>
+          <div class="form-group">
+            <label>Current Value ($)</label>
+            <input type="number" id="p-value" placeholder="75000" min="0" step="any">
           </div>
           <div class="form-group form-span2">
             <label>Notes <em>(optional)</em></label>
@@ -336,9 +400,8 @@
                 <th>Net Worth</th>
                 <th>Stocks</th>
                 <th>Crypto</th>
-                <th>Real Estate</th>
-                <th>Private Equity</th>
-                <th>Startup Equity</th>
+                <th>Private Funds</th>
+                <th>Margin Debt</th>
                 <th>Change</th>
                 <th></th>
               </tr>
@@ -352,6 +415,17 @@
     <!-- SETTINGS -->
     <section id="tab-settings" class="tab-content">
       <div class="section-header"><h2>Settings</h2></div>
+
+      <div class="card settings-card">
+        <h3>Appearance</h3>
+        <div class="toggle-row">
+          <span>Dark Mode</span>
+          <label class="toggle">
+            <input type="checkbox" id="dark-mode-toggle">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
 
       <div class="card settings-card">
         <h3>Live Stock Prices</h3>
