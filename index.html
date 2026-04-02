@@ -38,6 +38,7 @@
     <button class="tab" data-tab="stocks">Stocks</button>
     <button class="tab" data-tab="crypto">Crypto</button>
     <button class="tab" data-tab="private">Private</button>
+    <button class="tab" data-tab="realized">Realized</button>
     <button class="tab" data-tab="history">History</button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
@@ -103,9 +104,8 @@
           <div class="form-group">
             <label>Broker</label>
             <select id="a-broker">
-              <option value="E-Trade">E-Trade</option>
-              <option value="Chase">Chase</option>
               <option value="Robinhood">Robinhood</option>
+              <option value="Chase">Chase</option>
               <option value="Other">Other</option>
             </select>
           </div>
@@ -114,7 +114,7 @@
             <input type="text" id="a-label" placeholder="e.g. Individual Margin">
           </div>
           <div class="form-group">
-            <label>Total Deposited ($) <em>(optional)</em></label>
+            <label>Net Deposited ($) <em>(optional)</em></label>
             <input type="number" id="a-deposited" placeholder="50000" min="0" step="any">
           </div>
           <div class="form-group">
@@ -157,9 +157,8 @@
           <div class="form-group">
             <label>Broker</label>
             <select id="s-broker">
-              <option value="E-Trade">E-Trade</option>
-              <option value="Chase">Chase</option>
               <option value="Robinhood">Robinhood</option>
+              <option value="Chase">Chase</option>
               <option value="Other">Other</option>
             </select>
           </div>
@@ -191,9 +190,8 @@
           <div class="filter-group">
             <span class="filter-label">Broker:</span>
             <button class="pill active" data-broker="all">All</button>
-            <button class="pill" data-broker="E-Trade">E-Trade</button>
-            <button class="pill" data-broker="Chase">Chase</button>
             <button class="pill" data-broker="Robinhood">Robinhood</button>
+            <button class="pill" data-broker="Chase">Chase</button>
             <button class="pill" data-broker="Other">Other</button>
           </div>
           <div class="filter-group">
@@ -228,6 +226,35 @@
             </tfoot>
           </table>
         </div>
+      </div>
+
+      <!-- SELL STOCK FORM -->
+      <div class="card form-card" id="sell-stock-form" style="display:none">
+        <h3>Sell: <span id="sell-stock-label"></span></h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Shares to Sell <em>(max: <span id="sell-max-shares"></span>)</em></label>
+            <input type="number" id="ss-shares" min="0.001" step="any" placeholder="0">
+          </div>
+          <div class="form-group">
+            <label>Sale Price / Share ($)</label>
+            <input type="number" id="ss-price" min="0" step="any" placeholder="0.00">
+          </div>
+          <div class="form-group">
+            <label>Date</label>
+            <input type="date" id="ss-date">
+          </div>
+          <div class="form-group form-span2">
+            <label>Notes <em>(optional)</em></label>
+            <input type="text" id="ss-notes" placeholder="Optional">
+          </div>
+        </div>
+        <div class="pl-preview">Est. P/L: <span id="ss-pl-preview">—</span></div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="confirm-sell-btn">Record Sale</button>
+          <button class="btn btn-ghost" id="cancel-sell-btn">Cancel</button>
+        </div>
+        <input type="hidden" id="ss-stock-id">
       </div>
 
       <!-- OPTIONS -->
@@ -270,9 +297,8 @@
           <div class="form-group">
             <label>Broker</label>
             <select id="o-broker">
-              <option value="E-Trade">E-Trade</option>
-              <option value="Chase">Chase</option>
               <option value="Robinhood">Robinhood</option>
+              <option value="Chase">Chase</option>
               <option value="Other">Other</option>
             </select>
           </div>
@@ -318,6 +344,44 @@
           </table>
         </div>
       </div>
+
+      <!-- CLOSE OPTION FORM -->
+      <div class="card form-card" id="close-option-form" style="display:none">
+        <h3>Close: <span id="close-option-label"></span></h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Contracts to Close <em>(max: <span id="close-max-contracts"></span>)</em></label>
+            <input type="number" id="co-contracts" min="1" step="1" placeholder="1">
+          </div>
+          <div class="form-group">
+            <label>Close Price / Share ($)</label>
+            <input type="number" id="co-price" min="0" step="any" placeholder="0.00">
+            <span class="hint">Enter 0 if expired worthless</span>
+          </div>
+          <div class="form-group">
+            <label>Outcome</label>
+            <select id="co-outcome">
+              <option value="sold">Sold to Close</option>
+              <option value="expired">Expired Worthless</option>
+              <option value="exercised">Exercised</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Date</label>
+            <input type="date" id="co-date">
+          </div>
+          <div class="form-group form-span2">
+            <label>Notes <em>(optional)</em></label>
+            <input type="text" id="co-notes" placeholder="Optional">
+          </div>
+        </div>
+        <div class="pl-preview">Est. P/L: <span id="co-pl-preview">—</span></div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="confirm-close-btn">Record Close</button>
+          <button class="btn btn-ghost" id="cancel-close-btn">Cancel</button>
+        </div>
+        <input type="hidden" id="co-option-id">
+      </div>
     </section>
 
     <!-- CRYPTO -->
@@ -325,6 +389,64 @@
       <div class="section-header">
         <h2>Crypto Holdings</h2>
         <button class="btn btn-primary" id="add-crypto-toggle">+ Add Crypto</button>
+      </div>
+
+      <!-- CRYPTO CAPITAL -->
+      <div class="card" id="crypto-capital-card">
+        <div class="crypto-capital-row">
+          <div class="crypto-cap-stat">
+            <div class="stat-label">Net Deposited</div>
+            <div class="stat-value" id="crypto-deposited-display">—</div>
+          </div>
+          <div class="crypto-cap-stat">
+            <div class="stat-label">Current Value</div>
+            <div class="stat-value" id="crypto-value-display">—</div>
+          </div>
+          <div class="crypto-cap-stat">
+            <div class="stat-label">Gain / Loss</div>
+            <div class="stat-value" id="crypto-gain-display">—</div>
+          </div>
+          <button class="btn btn-ghost" id="edit-crypto-deposit-btn">Edit Net Deposited</button>
+        </div>
+        <div id="crypto-deposit-edit" style="display:none; margin-top:14px; border-top:1px solid var(--border); padding-top:14px">
+          <div class="form-group" style="max-width:280px">
+            <label>Total Net Deposited into Crypto ($)</label>
+            <input type="number" id="crypto-deposit-input" placeholder="25000" min="0" step="any">
+          </div>
+          <div class="form-actions" style="margin-top:10px">
+            <button class="btn btn-primary" id="save-crypto-deposit-btn">Save</button>
+            <button class="btn btn-ghost" id="cancel-crypto-deposit-btn">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SELL CRYPTO FORM -->
+      <div class="card form-card" id="sell-crypto-form" style="display:none">
+        <h3>Sell: <span id="sell-crypto-label"></span></h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Amount to Sell <em>(max: <span id="sell-crypto-max"></span>)</em></label>
+            <input type="number" id="sc-amount" min="0.000001" step="any" placeholder="0">
+          </div>
+          <div class="form-group">
+            <label>Sale Price / Coin ($)</label>
+            <input type="number" id="sc-price" min="0" step="any" placeholder="0.00">
+          </div>
+          <div class="form-group">
+            <label>Date</label>
+            <input type="date" id="sc-date">
+          </div>
+          <div class="form-group form-span2">
+            <label>Notes <em>(optional)</em></label>
+            <input type="text" id="sc-notes" placeholder="Optional">
+          </div>
+        </div>
+        <div class="pl-preview">Est. P/L: <span id="sc-pl-preview">—</span></div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="confirm-sell-crypto-btn">Record Sale</button>
+          <button class="btn btn-ghost" id="cancel-sell-crypto-btn">Cancel</button>
+        </div>
+        <input type="hidden" id="sc-crypto-id">
       </div>
 
       <div class="card form-card" id="crypto-form" style="display:none">
@@ -370,6 +492,7 @@
                 <th>Value</th>
                 <th>Cost Basis</th>
                 <th>P/L</th>
+                <th></th>
                 <th></th>
               </tr>
             </thead>
@@ -496,6 +619,52 @@
               </tr>
             </thead>
             <tbody id="snapshots-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- REALIZED GAINS -->
+    <section id="tab-realized" class="tab-content">
+      <div class="section-header"><h2>Realized Gains</h2></div>
+
+      <div class="dash-cats card" style="grid-template-columns: repeat(4, 1fr)">
+        <div class="cat-card cat-wealth">
+          <div class="cat-label">Net P/L</div>
+          <div class="cat-value" id="real-net-pl">—</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-label">Total Gains</div>
+          <div class="cat-value pos" id="real-gains">—</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-label">Total Losses</div>
+          <div class="cat-value neg" id="real-losses">—</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-label">Trades Logged</div>
+          <div class="cat-value" id="real-count">0</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Asset</th>
+                <th>Type</th>
+                <th>Qty / Contracts</th>
+                <th>Cost Basis</th>
+                <th>Sale Price</th>
+                <th>P/L</th>
+                <th>Broker</th>
+                <th>Notes</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="trades-tbody"></tbody>
           </table>
         </div>
       </div>

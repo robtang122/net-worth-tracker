@@ -7,6 +7,7 @@ const K = {
   private:      'nwt_private',
   accounts:     'nwt_accounts',
   options:      'nwt_options',
+  trades:       'nwt_trades',
   snapshots:    'nwt_snapshots',
   settings:     'nwt_settings',
   prices:       'nwt_prices',
@@ -23,8 +24,9 @@ let S = {
   private:      [],
   accounts:     [],
   options:      [],
+  trades:       [],
   snapshots:    [],
-  settings:     { finnhubKey: '', darkMode: true },
+  settings:     { finnhubKey: '', darkMode: true, cryptoDeposited: null },
   prices:       {},
   cryptoPrices: {},
   optionPrices: {}, // keyed by option id
@@ -42,8 +44,9 @@ function load() {
   S.private      = parse(K.private,      []);
   S.accounts     = parse(K.accounts,     []);
   S.options      = parse(K.options,      []);
+  S.trades       = parse(K.trades,       []);
   S.snapshots    = parse(K.snapshots,    []);
-  S.settings     = parse(K.settings,     { finnhubKey: '', darkMode: true });
+  S.settings     = parse(K.settings,     { finnhubKey: '', darkMode: true, cryptoDeposited: null });
   S.prices       = parse(K.prices,       {});
   S.cryptoPrices = parse(K.cryptoPrices, {});
   S.optionPrices = parse(K.optionPrices, {});
@@ -56,6 +59,7 @@ function save() {
   ls(K.private,      S.private);
   ls(K.accounts,     S.accounts);
   ls(K.options,      S.options);
+  ls(K.trades,       S.trades);
   ls(K.snapshots,    S.snapshots);
   ls(K.settings,     S.settings);
   ls(K.prices,       S.prices);
@@ -96,6 +100,10 @@ function optionsTotal() {
     return sum + (price * (o.contracts || 1) * 100);
   }, 0);
 }
+
+function realizedNetPL()  { return S.trades.reduce((s, t) => s + (t.pl || 0), 0); }
+function realizedGains()  { return S.trades.filter(t => t.pl > 0).reduce((s, t) => s + t.pl, 0); }
+function realizedLosses() { return S.trades.filter(t => t.pl < 0).reduce((s, t) => s + t.pl, 0); }
 
 function totalMarginDebt() {
   return S.accounts.reduce((sum, a) => sum + (a.marginDebt || 0), 0);
@@ -325,6 +333,7 @@ function renderAll() {
   renderOptions();
   renderCrypto();
   renderPrivate();
+  renderRealized();
   renderHistory();
 }
 
@@ -572,6 +581,7 @@ function renderStocks() {
         : '—'
       }</td>
       <td>
+        <button class="icon-btn" onclick="openSellStock('${s.id}')" title="Sell">$</button>
         <button class="icon-btn" onclick="editStock('${s.id}')" title="Edit">✏</button>
         <button class="icon-btn" onclick="delStock('${s.id}')"  title="Delete">✕</button>
       </td>
@@ -641,6 +651,7 @@ function renderOptions() {
       }</td>
       <td><span class="badge ${brokerBadge}">${o.broker}</span></td>
       <td>
+        <button class="icon-btn" onclick="openCloseOption('${o.id}')" title="Close">$</button>
         <button class="icon-btn" onclick="editOption('${o.id}')" title="Edit">✏</button>
         <button class="icon-btn" onclick="delOption('${o.id}')"  title="Delete">✕</button>
       </td>
@@ -656,8 +667,26 @@ function renderOptions() {
 function renderCrypto() {
   const tbody = document.getElementById('crypto-tbody');
 
+  // --- Capital card ---
+  const totalVal  = cryptoTotal();
+  const deposited = S.settings.cryptoDeposited;
+  const gain      = deposited != null ? totalVal - deposited : null;
+  const gainPct   = (gain !== null && deposited) ? (gain / deposited) * 100 : null;
+
+  const card = document.getElementById('crypto-capital-card');
+  if (card) {
+    set('crypto-deposited-display', deposited != null ? fmt(deposited) : '<span style="color:var(--muted)">—</span>');
+    set('crypto-value-display',     fmt(totalVal));
+    if (gain !== null) {
+      set('crypto-gain-display',
+        `<span class="${gain >= 0 ? 'pos' : 'neg'}">${fmt(gain)} (${fmtPct(gainPct)})</span>`);
+    } else {
+      set('crypto-gain-display', '<span style="color:var(--muted)">—</span>');
+    }
+  }
+
   if (!S.crypto.length) {
-    tbody.innerHTML = `<tr class="empty"><td colspan="7">No crypto yet — add one above.</td></tr>`;
+    tbody.innerHTML = `<tr class="empty"><td colspan="8">No crypto yet — add one above.</td></tr>`;
     set('crypto-foot', '<strong>—</strong>');
     return;
   }
@@ -685,6 +714,7 @@ function renderCrypto() {
         : '—'
       }</td>
       <td>
+        <button class="icon-btn" onclick="openSellCrypto('${c.id}')" title="Sell">$</button>
         <button class="icon-btn" onclick="editCrypto('${c.id}')" title="Edit">✏</button>
         <button class="icon-btn" onclick="delCrypto('${c.id}')"  title="Delete">✕</button>
       </td>
@@ -942,6 +972,51 @@ function drawHistoryChart(canvasId, height) {
 }
 
 // ============================================================
+// RENDER — REALIZED GAINS
+// ============================================================
+function renderRealized() {
+  const netPL   = realizedNetPL();
+  const gains   = realizedGains();
+  const losses  = realizedLosses();
+
+  const netEl = document.getElementById('real-net-pl');
+  if (netEl) {
+    netEl.textContent = fmt(netPL);
+    netEl.className   = 'stat-value ' + (netPL >= 0 ? 'pos' : 'neg');
+  }
+  set('real-gains',  `<span class="pos">${fmt(gains)}</span>`);
+  set('real-losses', `<span class="neg">${fmt(losses)}</span>`);
+  set('real-count',  S.trades.length);
+
+  const tbody = document.getElementById('trades-tbody');
+  if (!S.trades.length) {
+    tbody.innerHTML = `<tr class="empty"><td colspan="10">No realized trades yet — use the $ button on any holding to record a sale.</td></tr>`;
+    return;
+  }
+
+  const sorted = [...S.trades].sort((a, b) => new Date(b.date) - new Date(a.date));
+  tbody.innerHTML = sorted.map(t => {
+    const typeBadge = t.type === 'stock' ? 'badge-hold' : t.type === 'option' ? 'badge-call' : 'badge-other';
+    const typeLabel = t.type === 'stock' ? 'Stock' : t.type === 'option' ? 'Option' : 'Crypto';
+    const qty = t.type === 'stock'  ? `${t.shares} sh`
+              : t.type === 'option' ? `${t.contracts} ct`
+              : `${t.amount}`;
+    return `<tr>
+      <td>${fmtDate(t.date)}</td>
+      <td><strong>${t.name}</strong></td>
+      <td><span class="badge ${typeBadge}">${typeLabel}</span></td>
+      <td>${qty}</td>
+      <td>${t.costBasis  != null ? fmtP(t.costBasis)  : '—'}</td>
+      <td>${t.salePrice != null ? fmtP(t.salePrice) : '—'}</td>
+      <td><span class="${t.pl >= 0 ? 'pos' : 'neg'}">${fmt(t.pl)}</span></td>
+      <td>—</td>
+      <td>${t.notes ? `<span style="color:var(--muted);font-size:12px">${t.notes}</span>` : ''}</td>
+      <td><button class="icon-btn" onclick="delTrade('${t.id}')" title="Delete">✕</button></td>
+    </tr>`;
+  }).join('');
+}
+
+// ============================================================
 // SNAPSHOT
 // ============================================================
 function takeSnapshot() {
@@ -1096,6 +1171,226 @@ function delSnapshot(id) {
 }
 
 // ============================================================
+// SELL — STOCKS
+// ============================================================
+function openSellStock(id) {
+  const s = S.stocks.find(s => s.id === id);
+  if (!s) return;
+  el('ss-stock-id').value = id;
+  el('ss-shares').value   = '';
+  el('ss-price').value    = S.prices[s.ticker] ? S.prices[s.ticker].toFixed(2) : '';
+  el('ss-date').value     = new Date().toISOString().slice(0, 10);
+  el('ss-notes').value    = '';
+  set('sell-stock-label', `Sell <strong>${s.ticker}</strong>`);
+  set('sell-max-shares',  `Max: ${s.shares} shares`);
+  el('ss-pl-preview').textContent = '—';
+  el('ss-pl-preview').className   = '';
+  showForm('sell-stock-form');
+}
+
+function updateSellStockPreview() {
+  const id     = el('ss-stock-id').value;
+  const s      = S.stocks.find(s => s.id === id);
+  const shares = parseFloat(el('ss-shares').value);
+  const price  = parseFloat(el('ss-price').value);
+  if (!s || isNaN(shares) || isNaN(price) || !s.costBasis) { el('ss-pl-preview').textContent = '—'; return; }
+  const pl = (price - s.costBasis) * shares;
+  const span = el('ss-pl-preview');
+  span.textContent = fmt(pl);
+  span.className   = pl >= 0 ? 'pos' : 'neg';
+}
+
+function recordSale() {
+  const id       = el('ss-stock-id').value;
+  const s        = S.stocks.find(s => s.id === id);
+  if (!s) return;
+  const shares   = parseFloat(el('ss-shares').value);
+  const price    = parseFloat(el('ss-price').value);
+  const date     = el('ss-date').value;
+  const notes    = el('ss-notes').value.trim();
+
+  if (isNaN(shares) || shares <= 0 || shares > s.shares) {
+    toast('Enter a valid share count (max ' + s.shares + ').', 'error'); return;
+  }
+  if (isNaN(price) || price <= 0) { toast('Enter a valid sale price.', 'error'); return; }
+  if (!date) { toast('Enter a sale date.', 'error'); return; }
+
+  const pl = s.costBasis ? (price - s.costBasis) * shares : 0;
+
+  S.trades.push({
+    id: uid(), type: 'stock', name: s.ticker,
+    shares, salePrice: price, costBasis: s.costBasis || null,
+    pl, date, notes, closedAt: new Date().toISOString()
+  });
+
+  if (shares >= s.shares) {
+    S.stocks = S.stocks.filter(x => x.id !== id);
+  } else {
+    const i = S.stocks.findIndex(x => x.id === id);
+    S.stocks[i] = { ...S.stocks[i], shares: Math.round((s.shares - shares) * 1e8) / 1e8 };
+  }
+
+  save(); renderAll();
+  hideForm('sell-stock-form');
+  toast(`Sale recorded — ${fmt(pl)} P/L`, pl >= 0 ? 'success' : 'info');
+}
+
+// ============================================================
+// CLOSE — OPTIONS
+// ============================================================
+function openCloseOption(id) {
+  const o = S.options.find(o => o.id === id);
+  if (!o) return;
+  el('co-option-id').value  = id;
+  el('co-contracts').value  = o.contracts || 1;
+  el('co-price').value      = '';
+  el('co-outcome').value    = 'sold';
+  el('co-date').value       = new Date().toISOString().slice(0, 10);
+  el('co-notes').value      = '';
+  const expLabel = new Date(o.expiration + 'T00:00:00')
+    .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+  set('close-option-label', `Close <strong>${o.underlying} ${o.strike}${o.optionType[0].toUpperCase()} ${expLabel}</strong>`);
+  set('close-max-contracts', `${o.contracts || 1} contracts`);
+  el('co-pl-preview').textContent = '—';
+  el('co-pl-preview').className   = '';
+  showForm('close-option-form');
+}
+
+function updateCloseOptionPreview() {
+  const id         = el('co-option-id').value;
+  const o          = S.options.find(o => o.id === id);
+  const contracts  = parseInt(el('co-contracts').value) || 0;
+  const closePrice = parseFloat(el('co-price').value);
+  const outcome    = el('co-outcome').value;
+  const span       = el('co-pl-preview');
+  if (!o || contracts <= 0) { span.textContent = '—'; span.className = ''; return; }
+  const premium = o.premium || 0;
+  const pl = outcome === 'expired'
+    ? -(premium * contracts * 100)
+    : (!isNaN(closePrice) ? (closePrice - premium) * contracts * 100 : null);
+  if (pl === null) { span.textContent = '—'; span.className = ''; return; }
+  span.textContent = fmt(pl);
+  span.className   = pl >= 0 ? 'pos' : 'neg';
+}
+
+function recordOptionClose() {
+  const id        = el('co-option-id').value;
+  const o         = S.options.find(o => o.id === id);
+  if (!o) return;
+  const contracts  = parseInt(el('co-contracts').value);
+  const closePrice = parseFloat(el('co-price').value);
+  const outcome    = el('co-outcome').value;
+  const date       = el('co-date').value;
+  const notes      = el('co-notes').value.trim();
+
+  if (isNaN(contracts) || contracts <= 0 || contracts > (o.contracts || 1)) {
+    toast('Invalid contract count.', 'error'); return;
+  }
+  if (outcome !== 'expired' && (isNaN(closePrice) || closePrice < 0)) {
+    toast('Enter a close price.', 'error'); return;
+  }
+  if (!date) { toast('Enter a date.', 'error'); return; }
+
+  const premium = o.premium || 0;
+  const pl = outcome === 'expired'
+    ? -(premium * contracts * 100)
+    : (closePrice - premium) * contracts * 100;
+
+  const expLabel = new Date(o.expiration + 'T00:00:00')
+    .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+
+  S.trades.push({
+    id: uid(), type: 'option',
+    name: `${o.underlying} $${o.strike}${o.optionType[0].toUpperCase()} ${expLabel}`,
+    contracts, salePrice: outcome === 'expired' ? 0 : closePrice,
+    costBasis: premium, pl, date, notes,
+    closedAt: new Date().toISOString()
+  });
+
+  S.options = S.options.filter(x => x.id !== id);
+  delete S.optionPrices[id];
+
+  save(); renderAll();
+  hideForm('close-option-form');
+  toast(`Option closed — ${fmt(pl)} P/L`, pl >= 0 ? 'success' : 'info');
+}
+
+// ============================================================
+// SELL — CRYPTO
+// ============================================================
+function openSellCrypto(id) {
+  const c = S.crypto.find(c => c.id === id);
+  if (!c) return;
+  el('sc-crypto-id').value = id;
+  el('sc-amount').value    = '';
+  el('sc-price').value     = S.cryptoPrices[c.coinId] ? S.cryptoPrices[c.coinId].toFixed(2) : '';
+  el('sc-date').value      = new Date().toISOString().slice(0, 10);
+  el('sc-notes').value     = '';
+  set('sell-crypto-label', `Sell <strong>${c.name}</strong>`);
+  set('sell-crypto-max',   `Max: ${c.amount}`);
+  el('sc-pl-preview').textContent = '—';
+  el('sc-pl-preview').className   = '';
+  showForm('sell-crypto-form');
+}
+
+function updateSellCryptoPreview() {
+  const id     = el('sc-crypto-id').value;
+  const c      = S.crypto.find(c => c.id === id);
+  const amount = parseFloat(el('sc-amount').value);
+  const price  = parseFloat(el('sc-price').value);
+  const span   = el('sc-pl-preview');
+  if (!c || isNaN(amount) || isNaN(price) || !c.costBasis) { span.textContent = '—'; span.className = ''; return; }
+  const pl = (price - c.costBasis) * amount;
+  span.textContent = fmt(pl);
+  span.className   = pl >= 0 ? 'pos' : 'neg';
+}
+
+function recordCryptoSale() {
+  const id     = el('sc-crypto-id').value;
+  const c      = S.crypto.find(c => c.id === id);
+  if (!c) return;
+  const amount = parseFloat(el('sc-amount').value);
+  const price  = parseFloat(el('sc-price').value);
+  const date   = el('sc-date').value;
+  const notes  = el('sc-notes').value.trim();
+
+  if (isNaN(amount) || amount <= 0 || amount > c.amount) {
+    toast('Enter a valid amount (max ' + c.amount + ').', 'error'); return;
+  }
+  if (isNaN(price) || price <= 0) { toast('Enter a valid sale price.', 'error'); return; }
+  if (!date) { toast('Enter a sale date.', 'error'); return; }
+
+  const pl = c.costBasis ? (price - c.costBasis) * amount : 0;
+
+  S.trades.push({
+    id: uid(), type: 'crypto', name: c.name,
+    amount, salePrice: price, costBasis: c.costBasis || null,
+    pl, date, notes, closedAt: new Date().toISOString()
+  });
+
+  if (amount >= c.amount) {
+    S.crypto = S.crypto.filter(x => x.id !== id);
+  } else {
+    const i = S.crypto.findIndex(x => x.id === id);
+    S.crypto[i] = { ...S.crypto[i], amount: Math.round((c.amount - amount) * 1e8) / 1e8 };
+  }
+
+  save(); renderAll();
+  hideForm('sell-crypto-form');
+  toast(`Sale recorded — ${fmt(pl)} P/L`, pl >= 0 ? 'success' : 'info');
+}
+
+// ============================================================
+// DELETE TRADE
+// ============================================================
+function delTrade(id) {
+  if (!confirm('Delete this trade record?')) return;
+  S.trades = S.trades.filter(t => t.id !== id);
+  save(); renderAll();
+  toast('Trade record deleted.');
+}
+
+// ============================================================
 // FORM HELPERS
 // ============================================================
 function showForm(id) {
@@ -1109,7 +1404,7 @@ function hideForm(id) {
 
 function clearStockForm() {
   ['s-ticker','s-shares','s-cost','s-notes','s-editing-id'].forEach(id => el(id).value = '');
-  el('s-broker').value = 'E-Trade';
+  el('s-broker').value = 'Robinhood';
   el('s-type').value   = 'hold';
   document.getElementById('stock-form-title').textContent = 'Add Stock';
 }
@@ -1128,7 +1423,7 @@ function clearPrivateForm() {
 
 function clearAccountForm() {
   ['a-label','a-deposited','a-margin','a-notes','a-editing-id'].forEach(id => el(id).value = '');
-  el('a-broker').value = 'E-Trade';
+  el('a-broker').value = 'Robinhood';
   document.getElementById('account-form-title').textContent = 'Add Account';
 }
 
@@ -1136,8 +1431,27 @@ function clearOptionForm() {
   ['o-ticker','o-strike','o-expiration','o-contracts','o-premium','o-notes','o-editing-id']
     .forEach(id => el(id).value = '');
   el('o-type').value   = 'call';
-  el('o-broker').value = 'E-Trade';
+  el('o-broker').value = 'Robinhood';
   document.getElementById('option-form-title').textContent = 'Add Option';
+}
+
+function clearSellStockForm() {
+  ['ss-stock-id','ss-shares','ss-price','ss-date','ss-notes'].forEach(id => el(id).value = '');
+  el('ss-pl-preview').textContent = '—';
+  el('ss-pl-preview').className   = '';
+}
+
+function clearCloseOptionForm() {
+  ['co-option-id','co-contracts','co-price','co-date','co-notes'].forEach(id => el(id).value = '');
+  el('co-outcome').value          = 'sold';
+  el('co-pl-preview').textContent = '—';
+  el('co-pl-preview').className   = '';
+}
+
+function clearSellCryptoForm() {
+  ['sc-crypto-id','sc-amount','sc-price','sc-date','sc-notes'].forEach(id => el(id).value = '');
+  el('sc-pl-preview').textContent = '—';
+  el('sc-pl-preview').className   = '';
 }
 
 // ============================================================
@@ -1421,6 +1735,48 @@ function init() {
     save(); renderAll();
     hideForm('account-form'); clearAccountForm();
     toast(editId ? 'Account updated!' : 'Account added!', 'success');
+  });
+
+  // ---- SELL STOCK FORM ----
+  el('cancel-sell-btn').addEventListener('click', () => {
+    hideForm('sell-stock-form'); clearSellStockForm();
+  });
+  el('confirm-sell-btn').addEventListener('click', recordSale);
+  el('ss-shares').addEventListener('input', updateSellStockPreview);
+  el('ss-price').addEventListener('input', updateSellStockPreview);
+
+  // ---- CLOSE OPTION FORM ----
+  el('cancel-close-btn').addEventListener('click', () => {
+    hideForm('close-option-form'); clearCloseOptionForm();
+  });
+  el('confirm-close-btn').addEventListener('click', recordOptionClose);
+  el('co-contracts').addEventListener('input', updateCloseOptionPreview);
+  el('co-price').addEventListener('input', updateCloseOptionPreview);
+  el('co-outcome').addEventListener('change', updateCloseOptionPreview);
+
+  // ---- SELL CRYPTO FORM ----
+  el('cancel-sell-crypto-btn').addEventListener('click', () => {
+    hideForm('sell-crypto-form'); clearSellCryptoForm();
+  });
+  el('confirm-sell-crypto-btn').addEventListener('click', recordCryptoSale);
+  el('sc-amount').addEventListener('input', updateSellCryptoPreview);
+  el('sc-price').addEventListener('input', updateSellCryptoPreview);
+
+  // ---- CRYPTO DEPOSIT EDIT ----
+  el('edit-crypto-deposit-btn').addEventListener('click', () => {
+    const depositEdit = el('crypto-deposit-edit');
+    el('crypto-deposit-input').value = S.settings.cryptoDeposited || '';
+    depositEdit.style.display = 'flex';
+  });
+  el('cancel-crypto-deposit-btn').addEventListener('click', () => {
+    el('crypto-deposit-edit').style.display = 'none';
+  });
+  el('save-crypto-deposit-btn').addEventListener('click', () => {
+    const val = parseFloat(el('crypto-deposit-input').value);
+    S.settings.cryptoDeposited = isNaN(val) ? null : val;
+    save(); renderCrypto();
+    el('crypto-deposit-edit').style.display = 'none';
+    toast('Crypto deposit saved!', 'success');
   });
 
   // ---- SETTINGS ----

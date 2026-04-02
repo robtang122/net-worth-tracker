@@ -728,6 +728,32 @@ main {
 .toggle input:checked + .toggle-slider:before { transform: translateX(20px); }
 
 /* ============================================================
+   CRYPTO CAPITAL
+   ============================================================ */
+.crypto-capital-row {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+
+.crypto-cap-stat {
+  min-width: 120px;
+}
+
+/* ============================================================
+   P/L PREVIEW
+   ============================================================ */
+.pl-preview {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 8px 0 12px;
+  font-weight: 500;
+}
+
+.pl-preview span { font-weight: 700; }
+
+/* ============================================================
    TOAST
    ============================================================ */
 .toast {
