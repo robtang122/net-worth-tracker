@@ -69,8 +69,8 @@
           <div class="cat-pct" id="cat-wealth-pct">—</div>
         </div>
         <div class="cat-card">
-          <div class="cat-label">Margin Debt</div>
-          <div class="cat-value neg" id="cat-margin-val">$0</div>
+          <div class="cat-label">Cash / Margin</div>
+          <div class="cat-value" id="cat-margin-val">$0</div>
           <div class="cat-pct" id="cat-margin-note">across all accounts</div>
         </div>
       </div>
@@ -118,8 +118,8 @@
             <input type="number" id="a-deposited" placeholder="50000" min="0" step="any">
           </div>
           <div class="form-group">
-            <label>Margin Debt ($)</label>
-            <input type="number" id="a-margin" placeholder="0" min="0" step="any">
+            <label>Cash Balance ($) <em>(negative = margin debt)</em></label>
+            <input type="number" id="a-margin" placeholder="0" step="any">
           </div>
           <div class="form-group form-span2">
             <label>Notes <em>(optional)</em></label>
@@ -613,7 +613,7 @@
                 <th>Stocks</th>
                 <th>Crypto</th>
                 <th>Private Funds</th>
-                <th>Margin Debt</th>
+                <th>Cash / Margin</th>
                 <th>Change</th>
                 <th></th>
               </tr>

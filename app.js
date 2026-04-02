@@ -51,6 +51,13 @@ function load() {
   S.cryptoPrices = parse(K.cryptoPrices, {});
   S.optionPrices = parse(K.optionPrices, {});
   if (S.settings.darkMode === undefined) S.settings.darkMode = true;
+  // Migrate old marginDebt field → cash (positive debt → negative cash)
+  S.accounts.forEach(a => {
+    if (a.cash === undefined && a.marginDebt !== undefined) {
+      a.cash = -(a.marginDebt || 0);
+      delete a.marginDebt;
+    }
+  });
 }
 
 function save() {
@@ -105,12 +112,20 @@ function realizedNetPL()  { return S.trades.reduce((s, t) => s + (t.pl || 0), 0)
 function realizedGains()  { return S.trades.filter(t => t.pl > 0).reduce((s, t) => s + t.pl, 0); }
 function realizedLosses() { return S.trades.filter(t => t.pl < 0).reduce((s, t) => s + t.pl, 0); }
 
+function totalCashBalance() {
+  return S.accounts.reduce((sum, a) => sum + (a.cash || 0), 0);
+}
+
+// For backward compat and snapshot display: sum of negative cash values as positive debt figure
 function totalMarginDebt() {
-  return S.accounts.reduce((sum, a) => sum + (a.marginDebt || 0), 0);
+  return S.accounts.reduce((sum, a) => {
+    const cash = a.cash || 0;
+    return cash < 0 ? sum + Math.abs(cash) : sum;
+  }, 0);
 }
 
 function totalNetWorth() {
-  return stocksTotal() + cryptoTotal() + privateTotal() - totalMarginDebt();
+  return stocksTotal() + cryptoTotal() + privateTotal() + totalCashBalance();
 }
 
 // Total cost basis across all assets (what was put in)
@@ -383,7 +398,6 @@ function renderDashboard() {
   const sTotal   = stocksTotal();
   const cTotal   = cryptoTotal();
   const pvTotal  = privateTotal();
-  const margin   = totalMarginDebt();
   const wealth   = wealthGenerated();
   const invested = totalInvested();
 
@@ -392,7 +406,10 @@ function renderDashboard() {
   set('cat-stocks-val',  fmt(sTotal));   set('cat-stocks-pct',  pct(sTotal));
   set('cat-crypto-val',  fmt(cTotal));   set('cat-crypto-pct',  pct(cTotal));
   set('cat-private-val', fmt(pvTotal));  set('cat-private-pct', pct(pvTotal));
-  set('cat-margin-val',  fmt(margin));
+  const cashBal = totalCashBalance();
+  const cashEl  = document.getElementById('cat-margin-val');
+  cashEl.textContent = cashBal !== 0 ? fmt(Math.abs(cashBal)) : '$0';
+  cashEl.className   = 'cat-value ' + (cashBal < 0 ? 'neg' : cashBal > 0 ? 'pos' : '');
 
   if (wealth !== null) {
     const wpct = invested ? (wealth / invested) * 100 : 0;
@@ -456,8 +473,8 @@ function renderAccounts() {
   const cards = S.accounts.map(a => {
     const holdings   = brokerHoldings(a.broker);
     const costBasis  = brokerCostBasis(a.broker);
-    const marginDebt = a.marginDebt || 0;
-    const equity     = holdings - marginDebt;
+    const cash       = a.cash || 0;
+    const equity     = holdings + cash;
     const deposited  = a.deposited || null;
     const wealthGain = (deposited && holdings > 0) ? holdings - deposited : null;
     const wealthPct  = (wealthGain !== null && deposited) ? (wealthGain / deposited) * 100 : null;
@@ -504,12 +521,12 @@ function renderAccounts() {
           <div class="account-metric-value">${holdings > 0 ? fmt(holdings) : '<span style="color:var(--muted)">—</span>'}</div>
         </div>
         <div class="account-metric">
-          <div class="account-metric-label">Deposited</div>
+          <div class="account-metric-label">Net Deposited</div>
           <div class="account-metric-value">${deposited ? fmt(deposited) : '<span style="color:var(--muted)">—</span>'}</div>
         </div>
         <div class="account-metric">
-          <div class="account-metric-label">Margin Debt</div>
-          <div class="account-metric-value ${marginDebt > 0 ? 'neg' : ''}">${marginDebt > 0 ? fmt(marginDebt) : '$0'}</div>
+          <div class="account-metric-label">${cash < 0 ? 'Margin Debt' : 'Cash'}</div>
+          <div class="account-metric-value ${cash < 0 ? 'neg' : cash > 0 ? 'pos' : ''}">${cash !== 0 ? fmt(Math.abs(cash)) : '$0'}</div>
         </div>
       </div>
 
@@ -1146,7 +1163,7 @@ function editAccount(id) {
   el('a-broker').value     = a.broker;
   el('a-label').value      = a.label || '';
   el('a-deposited').value  = a.deposited || '';
-  el('a-margin').value     = a.marginDebt || '';
+  el('a-margin').value     = a.cash !== undefined ? a.cash : (a.marginDebt ? -a.marginDebt : '');
   el('a-notes').value      = a.notes || '';
   el('a-editing-id').value = id;
   document.getElementById('account-form-title').textContent = 'Edit Account';
@@ -1713,15 +1730,15 @@ function init() {
   });
 
   el('save-account-btn').addEventListener('click', () => {
-    const broker     = el('a-broker').value;
-    const label      = el('a-label').value.trim();
-    const deposited  = parseFloat(el('a-deposited').value) || null;
-    const marginDebt = parseFloat(el('a-margin').value) || 0;
-    const notes      = el('a-notes').value.trim();
-    const editId     = el('a-editing-id').value;
+    const broker    = el('a-broker').value;
+    const label     = el('a-label').value.trim();
+    const deposited = parseFloat(el('a-deposited').value) || null;
+    const cash      = parseFloat(el('a-margin').value) || 0;
+    const notes     = el('a-notes').value.trim();
+    const editId    = el('a-editing-id').value;
 
     const record = {
-      broker, label, deposited, marginDebt, notes,
+      broker, label, deposited, cash, notes,
       updatedAt: new Date().toISOString()
     };
 
