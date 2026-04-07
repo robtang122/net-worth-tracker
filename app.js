@@ -102,9 +102,10 @@ function privateTotal() {
 
 function optionsTotal() {
   return S.options.reduce((sum, o) => {
-    const price = S.optionPrices[o.id];
+    const price   = S.optionPrices[o.id];
     if (price == null) return sum;
-    return sum + (price * (o.contracts || 1) * 100);
+    const val     = price * (o.contracts || 1) * 100;
+    return sum + (o.position === 'short' ? -val : val);
   }, 0);
 }
 
@@ -666,41 +667,58 @@ function renderOptions() {
   today.setHours(0, 0, 0, 0);
 
   if (!S.options.length) {
-    tbody.innerHTML = `<tr class="empty"><td colspan="12">No options yet — add one above.</td></tr>`;
+    tbody.innerHTML = `<tr class="empty"><td colspan="13">No options yet — add one above.</td></tr>`;
     set('options-foot', '<strong>—</strong>');
     return;
   }
 
   let total = 0;
   tbody.innerHTML = S.options.map(o => {
-    const price      = S.optionPrices[o.id];
-    const contracts  = o.contracts || 1;
-    const val        = price != null ? price * contracts * 100 : null;
-    if (val) total  += val;
+    const price     = S.optionPrices[o.id];
+    const contracts = o.contracts || 1;
+    const premium   = o.premium || 0;
+    const isShort   = o.position === 'short';
 
-    const premium    = o.premium || 0;
-    const totalCost  = premium * contracts * 100;
-    const pl         = val != null ? val - totalCost : null;
-    const plPct      = (pl != null && totalCost > 0) ? (pl / totalCost) * 100 : null;
+    // Value: for short, current liability (what it would cost to buy back)
+    const val = price != null ? price * contracts * 100 : null;
 
-    const expDate    = new Date(o.expiration + 'T00:00:00');
-    const dte        = Math.ceil((expDate - today) / 86400000);
-    const expired    = dte < 0;
-    const dteLabel   = expired
+    // Net worth impact: long adds value, short subtracts (it's a liability)
+    if (val != null) total += isShort ? -val : val;
+
+    // P/L:
+    // Long:  current value − premium paid        (profit when price rises)
+    // Short: premium received − current value    (profit when price falls/expires)
+    const premiumTotal = premium * contracts * 100;
+    const pl = val != null
+      ? (isShort ? premiumTotal - val : val - premiumTotal)
+      : null;
+    const plPct = (pl != null && premiumTotal > 0) ? (pl / premiumTotal) * 100 : null;
+
+    const expDate  = new Date(o.expiration + 'T00:00:00');
+    const dte      = Math.ceil((expDate - today) / 86400000);
+    const expired  = dte < 0;
+    const dteLabel = expired
       ? '<span class="neg">Expired</span>'
       : dte === 0 ? '<span style="color:var(--danger)">Today</span>'
       : `${dte}d`;
 
-    const oAcct      = o.accountId ? S.accounts.find(a => a.id === o.accountId) : null;
-    const oLabel     = oAcct ? (oAcct.label || oAcct.broker) : (o.broker || '—');
-    const oBroker    = oAcct ? oAcct.broker : (o.broker || 'Other');
+    const oAcct     = o.accountId ? S.accounts.find(a => a.id === o.accountId) : null;
+    const oLabel    = oAcct ? (oAcct.label || oAcct.broker) : (o.broker || '—');
+    const oBroker   = oAcct ? oAcct.broker : (o.broker || 'Other');
     const brokerBadge = { Chase: 'badge-chase', 'E-Trade': 'badge-etrade', Robinhood: 'badge-robinhood', Other: 'badge-other' }[oBroker] || 'badge-other';
 
-    const expLabel   = new Date(o.expiration + 'T00:00:00')
+    const expLabel  = new Date(o.expiration + 'T00:00:00')
       .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+
+    const posBadge  = isShort ? 'badge-trade' : 'badge-hold';
+    const posLabel  = isShort ? 'Short' : 'Long';
+
+    // Expired P/L: long loses premium paid, short keeps full premium
+    const expiredPL = isShort ? premiumTotal : -premiumTotal;
 
     return `<tr>
       <td><strong>${o.underlying}</strong></td>
+      <td><span class="badge ${posBadge}">${posLabel}</span></td>
       <td><span class="badge badge-${o.optionType}">${o.optionType.toUpperCase()}</span></td>
       <td>$${o.strike}</td>
       <td>${expLabel}</td>
@@ -708,10 +726,12 @@ function renderOptions() {
       <td>${contracts}</td>
       <td>${fmtP(premium)}</td>
       <td>${price != null ? fmtP(price) : '<span style="color:var(--muted)">—</span>'}</td>
-      <td>${val != null ? fmt(expired ? 0 : val) : '—'}</td>
-      <td>${pl != null && !expired
-        ? `<span class="${pl >= 0 ? 'pos' : 'neg'}">${fmt(pl)} <small>(${fmtPct(plPct)})</small></span>`
-        : expired ? '<span class="neg">$0</span>' : '—'
+      <td>${val != null ? fmt(val) : '—'}</td>
+      <td>${expired
+        ? `<span class="${expiredPL >= 0 ? 'pos' : 'neg'}">${fmt(expiredPL)}</span>`
+        : pl != null
+          ? `<span class="${pl >= 0 ? 'pos' : 'neg'}">${fmt(pl)} <small>(${fmtPct(plPct)})</small></span>`
+          : '—'
       }</td>
       <td><span class="badge ${brokerBadge}">${oLabel}</span></td>
       <td>
@@ -1190,6 +1210,7 @@ function editOption(id) {
   if (!o) return;
   populateOptionAccountSelect();
   el('o-ticker').value     = o.underlying;
+  el('o-position').value   = o.position || 'long';
   el('o-type').value       = o.optionType;
   el('o-strike').value     = o.strike;
   el('o-expiration').value = o.expiration;
@@ -1370,9 +1391,12 @@ function recordOptionClose() {
   if (!date) { toast('Enter a date.', 'error'); return; }
 
   const premium = o.premium || 0;
+  const isShort = o.position === 'short';
+  const premiumTotal = premium * contracts * 100;
   const pl = outcome === 'expired'
-    ? -(premium * contracts * 100)
-    : (closePrice - premium) * contracts * 100;
+    ? (isShort ? premiumTotal : -premiumTotal)           // short keeps premium, long loses it
+    : (isShort ? premiumTotal - closePrice * contracts * 100   // short: received - buyback cost
+               : (closePrice - premium) * contracts * 100);    // long: proceeds - cost
 
   const expLabel = new Date(o.expiration + 'T00:00:00')
     .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
@@ -1518,7 +1542,8 @@ function populateOptionAccountSelect() {
 function clearOptionForm() {
   ['o-ticker','o-strike','o-expiration','o-contracts','o-premium','o-notes','o-editing-id']
     .forEach(id => el(id).value = '');
-  el('o-type').value = 'call';
+  el('o-position').value = 'long';
+  el('o-type').value     = 'call';
   populateOptionAccountSelect();
   document.getElementById('option-form-title').textContent = 'Add Option';
 }
@@ -1778,6 +1803,7 @@ function init() {
 
   el('save-option-btn').addEventListener('click', () => {
     const underlying  = el('o-ticker').value.trim().toUpperCase();
+    const position    = el('o-position').value;
     const optionType  = el('o-type').value;
     const strike      = parseFloat(el('o-strike').value);
     const expiration  = el('o-expiration').value;
@@ -1797,7 +1823,7 @@ function init() {
     const oAcct  = S.accounts.find(a => a.id === accountId);
     const broker = oAcct ? oAcct.broker : 'Other';
 
-    const record = { underlying, optionType, strike, expiration, contracts, premium, accountId, broker, notes };
+    const record = { underlying, position, optionType, strike, expiration, contracts, premium, accountId, broker, notes };
 
     if (editId) {
       const i = S.options.findIndex(o => o.id === editId);

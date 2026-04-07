@@ -268,6 +268,13 @@
             <input type="text" id="o-ticker" placeholder="AAPL" style="text-transform:uppercase">
           </div>
           <div class="form-group">
+            <label>Position</label>
+            <select id="o-position">
+              <option value="long">Long (Bought)</option>
+              <option value="short">Short (Sold / Written)</option>
+            </select>
+          </div>
+          <div class="form-group">
             <label>Type</label>
             <select id="o-type">
               <option value="call">Call</option>
@@ -287,7 +294,7 @@
             <input type="number" id="o-contracts" placeholder="1" min="1" step="1">
           </div>
           <div class="form-group">
-            <label>Premium Paid / Share</label>
+            <label>Premium / Share</label>
             <input type="number" id="o-premium" placeholder="5.50" min="0" step="any">
             <span class="hint">Price per share (×100 per contract)</span>
           </div>
@@ -315,6 +322,7 @@
             <thead>
               <tr>
                 <th>Underlying</th>
+                <th>Pos</th>
                 <th>Type</th>
                 <th>Strike</th>
                 <th>Expiration</th>
@@ -331,7 +339,7 @@
             <tbody id="options-tbody"></tbody>
             <tfoot>
               <tr>
-                <td colspan="8"><strong>Total Value</strong></td>
+                <td colspan="9"><strong>Total Value</strong></td>
                 <td id="options-foot"><strong>—</strong></td>
                 <td colspan="3"></td>
               </tr>
