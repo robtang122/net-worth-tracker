@@ -554,7 +554,11 @@ function renderStocks() {
   const tbody = document.getElementById('stocks-tbody');
   let rows    = S.stocks;
   if (S.filters.broker !== 'all') rows = rows.filter(s => s.broker === S.filters.broker);
-  if (S.filters.type   !== 'all') rows = rows.filter(s => s.type   === S.filters.type);
+  if (S.filters.type   !== 'all') {
+    const oldMap = { 'long-hold': ['hold','long-term'], 'short-trade': ['trade','short-term'] };
+    const aliases = oldMap[S.filters.type] || [];
+    rows = rows.filter(s => s.type === S.filters.type || aliases.includes(s.type));
+  }
 
   if (!rows.length) {
     tbody.innerHTML = `<tr class="empty"><td colspan="9">${
@@ -580,10 +584,15 @@ function renderStocks() {
       'Other':     'badge-other',
     }[s.broker] || 'badge-other';
 
-    // Backward compat: old data used 'long-term'/'short-term'
-    const isHold     = s.type === 'hold' || s.type === 'long-term';
-    const typeBadge  = isHold ? 'badge-hold' : 'badge-trade';
-    const typeLabel  = isHold ? 'Hold' : 'Trade';
+    // Normalize old type values to new ones
+    const typeMap = {
+      'long-hold': ['long-hold', 'hold', 'long-term'],
+      'short-trade': ['short-trade', 'trade', 'short-term'],
+      'medium-trade': ['medium-trade'],
+    };
+    const normType = Object.entries(typeMap).find(([, vals]) => vals.includes(s.type))?.[0] || 'long-hold';
+    const typeBadge = `badge-${normType}`;
+    const typeLabel = normType === 'long-hold' ? 'Long Hold' : normType === 'short-trade' ? 'Short Trade' : 'Medium Trade';
 
     return `<tr>
       <td><strong>${s.ticker}</strong></td>
@@ -1422,7 +1431,7 @@ function hideForm(id) {
 function clearStockForm() {
   ['s-ticker','s-shares','s-cost','s-notes','s-editing-id'].forEach(id => el(id).value = '');
   el('s-broker').value = 'Robinhood';
-  el('s-type').value   = 'hold';
+  el('s-type').value   = 'long-hold';
   document.getElementById('stock-form-title').textContent = 'Add Stock';
 }
 
