@@ -691,12 +691,10 @@ function renderOptions() {
       : dte === 0 ? '<span style="color:var(--danger)">Today</span>'
       : `${dte}d`;
 
-    const brokerBadge = {
-      'Chase':     'badge-chase',
-      'E-Trade':   'badge-etrade',
-      'Robinhood': 'badge-robinhood',
-      'Other':     'badge-other',
-    }[o.broker] || 'badge-other';
+    const oAcct      = o.accountId ? S.accounts.find(a => a.id === o.accountId) : null;
+    const oLabel     = oAcct ? (oAcct.label || oAcct.broker) : (o.broker || '—');
+    const oBroker    = oAcct ? oAcct.broker : (o.broker || 'Other');
+    const brokerBadge = { Chase: 'badge-chase', 'E-Trade': 'badge-etrade', Robinhood: 'badge-robinhood', Other: 'badge-other' }[oBroker] || 'badge-other';
 
     const expLabel   = new Date(o.expiration + 'T00:00:00')
       .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
@@ -715,7 +713,7 @@ function renderOptions() {
         ? `<span class="${pl >= 0 ? 'pos' : 'neg'}">${fmt(pl)} <small>(${fmtPct(plPct)})</small></span>`
         : expired ? '<span class="neg">$0</span>' : '—'
       }</td>
-      <td><span class="badge ${brokerBadge}">${o.broker}</span></td>
+      <td><span class="badge ${brokerBadge}">${oLabel}</span></td>
       <td>
         <button class="icon-btn" onclick="openCloseOption('${o.id}')" title="Close">$</button>
         <button class="icon-btn" onclick="editOption('${o.id}')" title="Edit">✏</button>
@@ -1100,6 +1098,7 @@ function takeSnapshot() {
   S.snapshots.push(snap);
   save();
   renderAll();
+  autoBackup();
   toast('Snapshot saved!', 'success');
 }
 
@@ -1189,15 +1188,21 @@ function delPrivate(id) {
 function editOption(id) {
   const o = S.options.find(o => o.id === id);
   if (!o) return;
-  el('o-ticker').value      = o.underlying;
-  el('o-type').value        = o.optionType;
-  el('o-strike').value      = o.strike;
-  el('o-expiration').value  = o.expiration;
-  el('o-contracts').value   = o.contracts;
-  el('o-premium').value     = o.premium;
-  el('o-broker').value      = o.broker;
-  el('o-notes').value       = o.notes || '';
-  el('o-editing-id').value  = id;
+  populateOptionAccountSelect();
+  el('o-ticker').value     = o.underlying;
+  el('o-type').value       = o.optionType;
+  el('o-strike').value     = o.strike;
+  el('o-expiration').value = o.expiration;
+  el('o-contracts').value  = o.contracts;
+  el('o-premium').value    = o.premium;
+  el('o-notes').value      = o.notes || '';
+  el('o-editing-id').value = id;
+  if (o.accountId) {
+    el('o-account').value = o.accountId;
+  } else {
+    const match = S.accounts.find(a => a.broker === o.broker);
+    el('o-account').value = match ? match.id : '';
+  }
   document.getElementById('option-form-title').textContent = 'Edit Option';
   showForm('option-form');
 }
@@ -1500,11 +1505,21 @@ function clearAccountForm() {
   document.getElementById('account-form-title').textContent = 'Add Account';
 }
 
+function populateOptionAccountSelect() {
+  const sel = el('o-account');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = S.accounts.length
+    ? S.accounts.map(a => `<option value="${a.id}">${a.label || a.broker}</option>`).join('')
+    : '<option value="">— add accounts first —</option>';
+  if (current && sel.querySelector(`option[value="${current}"]`)) sel.value = current;
+}
+
 function clearOptionForm() {
   ['o-ticker','o-strike','o-expiration','o-contracts','o-premium','o-notes','o-editing-id']
     .forEach(id => el(id).value = '');
-  el('o-type').value   = 'call';
-  el('o-broker').value = 'Robinhood';
+  el('o-type').value = 'call';
+  populateOptionAccountSelect();
   document.getElementById('option-form-title').textContent = 'Add Option';
 }
 
@@ -1546,6 +1561,28 @@ function switchTab(name) {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
   document.getElementById(`tab-${name}`).classList.add('active');
+}
+
+// ============================================================
+// AUTO BACKUP
+// ============================================================
+function autoBackup() {
+  try {
+    const data = {
+      stocks: S.stocks, crypto: S.crypto, private: S.private,
+      accounts: S.accounts, options: S.options, trades: S.trades,
+      snapshots: S.snapshots, settings: S.settings,
+      prices: S.prices, cryptoPrices: S.cryptoPrices,
+      backedUpAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `nwt-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { /* silent */ }
 }
 
 // ============================================================
@@ -1729,7 +1766,7 @@ function init() {
   el('add-option-toggle').addEventListener('click', () => {
     const f = el('option-form');
     if (f.style.display === 'none' || !f.style.display) {
-      clearOptionForm(); showForm('option-form');
+      clearOptionForm(); populateOptionAccountSelect(); showForm('option-form');
     } else {
       hideForm('option-form');
     }
@@ -1743,18 +1780,24 @@ function init() {
     const underlying  = el('o-ticker').value.trim().toUpperCase();
     const optionType  = el('o-type').value;
     const strike      = parseFloat(el('o-strike').value);
-    const expiration  = el('o-expiration').value; // YYYY-MM-DD
+    const expiration  = el('o-expiration').value;
     const contracts   = parseInt(el('o-contracts').value) || 1;
     const premium     = parseFloat(el('o-premium').value);
-    const broker      = el('o-broker').value;
+    const accountId   = el('o-account').value;
     const notes       = el('o-notes').value.trim();
     const editId      = el('o-editing-id').value;
 
     if (!underlying || isNaN(strike) || !expiration || isNaN(premium)) {
       toast('Fill in all required fields.', 'error'); return;
     }
+    if (!accountId) {
+      toast('Select an account.', 'error'); return;
+    }
 
-    const record = { underlying, optionType, strike, expiration, contracts, premium, broker, notes };
+    const oAcct  = S.accounts.find(a => a.id === accountId);
+    const broker = oAcct ? oAcct.broker : 'Other';
+
+    const record = { underlying, optionType, strike, expiration, contracts, premium, accountId, broker, notes };
 
     if (editId) {
       const i = S.options.findIndex(o => o.id === editId);
@@ -1859,6 +1902,7 @@ function init() {
   });
 
   el('export-btn').addEventListener('click', () => {
+
     const data = {
       stocks: S.stocks, crypto: S.crypto, private: S.private,
       accounts: S.accounts, snapshots: S.snapshots,
