@@ -155,11 +155,9 @@
             <input type="number" id="s-shares" placeholder="10" min="0" step="any">
           </div>
           <div class="form-group">
-            <label>Broker</label>
-            <select id="s-broker">
-              <option value="Robinhood">Robinhood</option>
-              <option value="Chase">Chase</option>
-              <option value="Other">Other</option>
+            <label>Account</label>
+            <select id="s-account">
+              <option value="">— select account —</option>
             </select>
           </div>
           <div class="form-group">
@@ -188,12 +186,9 @@
 
       <div class="card">
         <div class="filter-bar">
-          <div class="filter-group">
-            <span class="filter-label">Broker:</span>
+          <div class="filter-group" id="account-filter-pills">
+            <span class="filter-label">Account:</span>
             <button class="pill active" data-broker="all">All</button>
-            <button class="pill" data-broker="Robinhood">Robinhood</button>
-            <button class="pill" data-broker="Chase">Chase</button>
-            <button class="pill" data-broker="Other">Other</button>
           </div>
           <div class="filter-group">
             <span class="filter-label">Type:</span>
@@ -211,7 +206,7 @@
                 <th>Shares</th>
                 <th>Price</th>
                 <th>Value</th>
-                <th>Broker</th>
+                <th>Account</th>
                 <th>Type</th>
                 <th>Cost Basis</th>
                 <th>P/L</th>

@@ -148,20 +148,24 @@ function wealthGenerated() {
   return totalNetWorth() - invested;
 }
 
-// Per-broker: sum stock values for that broker
-function brokerHoldings(brokerName) {
+// Match a stock to an account — by accountId if set, else by broker name (backward compat)
+function stockBelongsToAccount(s, a) {
+  if (s.accountId) return s.accountId === a.id;
+  return s.broker === a.broker;
+}
+
+function brokerHoldings(account) {
   return S.stocks.reduce((sum, s) => {
-    if (s.broker === brokerName) {
+    if (stockBelongsToAccount(s, account)) {
       return sum + ((S.prices[s.ticker] || 0) * s.shares);
     }
     return sum;
   }, 0);
 }
 
-// Per-broker: sum cost basis of stocks
-function brokerCostBasis(brokerName) {
+function brokerCostBasis(account) {
   return S.stocks.reduce((sum, s) => {
-    if (s.broker === brokerName && s.costBasis) {
+    if (stockBelongsToAccount(s, account) && s.costBasis) {
       return sum + (s.costBasis * s.shares);
     }
     return sum;
@@ -471,8 +475,8 @@ function renderAccounts() {
   }
 
   const cards = S.accounts.map(a => {
-    const holdings   = brokerHoldings(a.broker);
-    const costBasis  = brokerCostBasis(a.broker);
+    const holdings   = brokerHoldings(a);
+    const costBasis  = brokerCostBasis(a);
     const cash       = a.cash || 0;
     const equity     = holdings + cash;
     const deposited  = a.deposited || null;
@@ -550,10 +554,47 @@ function renderAccounts() {
 // ============================================================
 // RENDER — STOCKS
 // ============================================================
+function populateAccountSelect() {
+  const sel = el('s-account');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = S.accounts.length
+    ? S.accounts.map(a => `<option value="${a.id}">${a.label || a.broker}</option>`).join('')
+    : '<option value="">— add accounts first —</option>';
+  if (current && sel.querySelector(`option[value="${current}"]`)) sel.value = current;
+}
+
+function renderAccountFilterPills() {
+  const container = document.getElementById('account-filter-pills');
+  if (!container) return;
+  const pills = S.accounts.map(a =>
+    `<button class="pill${S.filters.broker === a.id ? ' active' : ''}" data-broker="${a.id}">${a.label || a.broker}</button>`
+  ).join('');
+  container.innerHTML = `<span class="filter-label">Account:</span>
+    <button class="pill${S.filters.broker === 'all' ? ' active' : ''}" data-broker="all">All</button>
+    ${pills}`;
+  container.querySelectorAll('[data-broker]').forEach(b =>
+    b.addEventListener('click', () => {
+      container.querySelectorAll('[data-broker]').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      S.filters.broker = b.dataset.broker;
+      renderStocks();
+    })
+  );
+}
+
 function renderStocks() {
+  renderAccountFilterPills();
   const tbody = document.getElementById('stocks-tbody');
   let rows    = S.stocks;
-  if (S.filters.broker !== 'all') rows = rows.filter(s => s.broker === S.filters.broker);
+  if (S.filters.broker !== 'all') {
+    rows = rows.filter(s => {
+      if (s.accountId) return s.accountId === S.filters.broker;
+      // Backward compat: match by broker name if account id equals broker name
+      const acct = S.accounts.find(a => a.id === S.filters.broker);
+      return acct ? s.broker === acct.broker : false;
+    });
+  }
   if (S.filters.type   !== 'all') {
     const oldMap = { 'long-hold': ['hold','long-term'], 'short-trade': ['trade','short-term'] };
     const aliases = oldMap[S.filters.type] || [];
@@ -577,12 +618,11 @@ function renderStocks() {
     const pl    = (price != null && s.costBasis) ? (price - s.costBasis) * s.shares : null;
     const plPct = (price != null && s.costBasis) ? ((price - s.costBasis) / s.costBasis) * 100 : null;
 
-    const brokerBadge = {
-      'Chase':     'badge-chase',
-      'E-Trade':   'badge-etrade',
-      'Robinhood': 'badge-robinhood',
-      'Other':     'badge-other',
-    }[s.broker] || 'badge-other';
+    // Resolve account label — by accountId if set, else fall back to broker name
+    const acct        = s.accountId ? S.accounts.find(a => a.id === s.accountId) : null;
+    const acctLabel   = acct ? (acct.label || acct.broker) : (s.broker || '—');
+    const brokerName  = acct ? acct.broker : (s.broker || 'Other');
+    const brokerBadge = { Chase: 'badge-chase', 'E-Trade': 'badge-etrade', Robinhood: 'badge-robinhood', Other: 'badge-other' }[brokerName] || 'badge-other';
 
     // Normalize old type values to new ones
     const typeMap = {
@@ -599,7 +639,7 @@ function renderStocks() {
       <td>${s.shares.toLocaleString()}</td>
       <td>${price != null ? fmtP(price) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${val != null ? fmt(val) : '—'}</td>
-      <td><span class="badge ${brokerBadge}">${s.broker}</span></td>
+      <td><span class="badge ${brokerBadge}">${acctLabel}</span></td>
       <td><span class="badge ${typeBadge}">${typeLabel}</span></td>
       <td>${s.costBasis ? fmtP(s.costBasis) : '—'}</td>
       <td>${pl != null
@@ -1069,13 +1109,20 @@ function takeSnapshot() {
 function editStock(id) {
   const s = S.stocks.find(s => s.id === id);
   if (!s) return;
-  el('s-ticker').value      = s.ticker;
-  el('s-shares').value      = s.shares;
-  el('s-broker').value      = s.broker;
-  el('s-type').value        = s.type;
-  el('s-cost').value        = s.costBasis || '';
-  el('s-notes').value       = s.notes || '';
-  el('s-editing-id').value  = id;
+  populateAccountSelect();
+  el('s-ticker').value     = s.ticker;
+  el('s-shares').value     = s.shares;
+  el('s-type').value       = s.type;
+  el('s-cost').value       = s.costBasis || '';
+  el('s-notes').value      = s.notes || '';
+  el('s-editing-id').value = id;
+  // Resolve accountId — if old stock has only broker, try to find matching account
+  if (s.accountId) {
+    el('s-account').value = s.accountId;
+  } else {
+    const match = S.accounts.find(a => a.broker === s.broker);
+    el('s-account').value = match ? match.id : '';
+  }
   document.getElementById('stock-form-title').textContent = 'Edit Stock';
   showForm('stock-form');
 }
@@ -1430,8 +1477,8 @@ function hideForm(id) {
 
 function clearStockForm() {
   ['s-ticker','s-shares','s-cost','s-notes','s-editing-id'].forEach(id => el(id).value = '');
-  el('s-broker').value = 'Robinhood';
-  el('s-type').value   = 'long-hold';
+  el('s-type').value = 'long-hold';
+  populateAccountSelect();
   document.getElementById('stock-form-title').textContent = 'Add Stock';
 }
 
@@ -1543,7 +1590,7 @@ function init() {
   el('save-stock-btn').addEventListener('click', () => {
     const ticker    = el('s-ticker').value.trim().toUpperCase();
     const shares    = parseFloat(el('s-shares').value);
-    const broker    = el('s-broker').value;
+    const accountId = el('s-account').value;
     const type      = el('s-type').value;
     const costBasis = parseFloat(el('s-cost').value) || null;
     const notes     = el('s-notes').value.trim();
@@ -1552,12 +1599,18 @@ function init() {
     if (!ticker || isNaN(shares) || shares <= 0) {
       toast('Enter a valid ticker and share count.', 'error'); return;
     }
+    if (!accountId) {
+      toast('Select an account.', 'error'); return;
+    }
+
+    const acct   = S.accounts.find(a => a.id === accountId);
+    const broker = acct ? acct.broker : 'Other';
 
     if (editId) {
       const i = S.stocks.findIndex(s => s.id === editId);
-      if (i !== -1) S.stocks[i] = { ...S.stocks[i], ticker, shares, broker, type, costBasis, notes };
+      if (i !== -1) S.stocks[i] = { ...S.stocks[i], ticker, shares, accountId, broker, type, costBasis, notes };
     } else {
-      S.stocks.push({ id: uid(), ticker, shares, broker, type, costBasis, notes });
+      S.stocks.push({ id: uid(), ticker, shares, accountId, broker, type, costBasis, notes });
     }
 
     save(); renderAll();
@@ -1571,16 +1624,7 @@ function init() {
     }
   });
 
-  // Stock filters
-  document.querySelectorAll('[data-broker]').forEach(b =>
-    b.addEventListener('click', () => {
-      document.querySelectorAll('[data-broker]').forEach(x => x.classList.remove('active'));
-      b.classList.add('active');
-      S.filters.broker = b.dataset.broker;
-      renderStocks();
-    })
-  );
-
+  // Stock type filters
   document.querySelectorAll('[data-stype]').forEach(b =>
     b.addEventListener('click', () => {
       document.querySelectorAll('[data-stype]').forEach(x => x.classList.remove('active'));
