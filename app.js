@@ -26,7 +26,7 @@ let S = {
   options:      [],
   trades:       [],
   snapshots:    [],
-  settings:     { finnhubKey: '', darkMode: true, cryptoDeposited: null },
+  settings:     { finnhubKey: '', tradierKey: '', tradierSandbox: true, darkMode: true, cryptoDeposited: null },
   prices:       {},
   cryptoPrices: {},
   optionPrices: {}, // keyed by option id
@@ -46,7 +46,7 @@ function load() {
   S.options      = parse(K.options,      []);
   S.trades       = parse(K.trades,       []);
   S.snapshots    = parse(K.snapshots,    []);
-  S.settings     = parse(K.settings,     { finnhubKey: '', darkMode: true, cryptoDeposited: null });
+  S.settings     = parse(K.settings,     { finnhubKey: '', tradierKey: '', tradierSandbox: true, darkMode: true, cryptoDeposited: null });
   S.prices       = parse(K.prices,       {});
   S.cryptoPrices = parse(K.cryptoPrices, {});
   S.optionPrices = parse(K.optionPrices, {});
@@ -265,29 +265,49 @@ async function fetchCryptoPrices(coinIds) {
   } catch { return {}; }
 }
 
-// Fetch options chain for an underlying, return map of { id: lastPrice }
-async function fetchOptionPricesForUnderlying(underlying, opts) {
-  if (!S.settings.finnhubKey) return {};
-  try {
-    const res  = await fetch(
-      `https://finnhub.io/api/v1/stock/option-chain?symbol=${underlying}&token=${S.settings.finnhubKey}`
-    );
-    const data = await res.json();
-    if (!data.data) return {};
+// Fetch options prices via Tradier (sandbox or live)
+async function fetchOptionPricesWithTradier() {
+  if (!S.settings.tradierKey || !S.options.length) return;
+  const base = S.settings.tradierSandbox !== false
+    ? 'https://sandbox.tradier.com/v1'
+    : 'https://api.tradier.com/v1';
+  const headers = {
+    'Authorization': `Bearer ${S.settings.tradierKey}`,
+    'Accept': 'application/json',
+  };
 
-    const result = {};
-    for (const opt of opts) {
-      const expEntry = data.data.find(d => d.expirationDate === opt.expiration);
-      if (!expEntry) continue;
-      const chain = opt.optionType === 'call'
-        ? expEntry.options?.CALL
-        : expEntry.options?.PUT;
+  // Group by underlying+expiration to minimize API calls
+  const pairs = {};
+  for (const o of S.options) {
+    const key = `${o.underlying}|${o.expiration}`;
+    if (!pairs[key]) pairs[key] = [];
+    pairs[key].push(o);
+  }
+
+  for (const [key, opts] of Object.entries(pairs)) {
+    const [underlying, expiration] = key.split('|');
+    try {
+      const res  = await fetch(
+        `${base}/markets/options/chains?symbol=${underlying}&expiration=${expiration}&greeks=false`,
+        { headers }
+      );
+      const data = await res.json();
+      const chain = data.options?.option;
       if (!chain) continue;
-      const match = chain.find(c => Math.abs((c.strike || 0) - opt.strike) < 0.01);
-      if (match && match.lastPrice != null) result[opt.id] = match.lastPrice;
-    }
-    return result;
-  } catch { return {}; }
+
+      for (const o of opts) {
+        const match = chain.find(c =>
+          c.option_type === o.optionType &&
+          Math.abs((c.strike || 0) - o.strike) < 0.01
+        );
+        if (!match) continue;
+        // Use last price; fall back to mid of bid/ask if last is stale (0)
+        const price = (match.last > 0) ? match.last : ((match.bid + match.ask) / 2);
+        if (price > 0) S.optionPrices[o.id] = price;
+      }
+    } catch { /* silent — one bad expiry shouldn't kill the rest */ }
+    await delay(220);
+  }
 }
 
 async function refreshPrices() {
@@ -308,17 +328,12 @@ async function refreshPrices() {
     }
   }
 
-  // Options prices — grouped by underlying to minimize API calls
-  if (S.options.length && S.settings.finnhubKey) {
-    const byUnderlying = {};
-    for (const o of S.options) {
-      if (!byUnderlying[o.underlying]) byUnderlying[o.underlying] = [];
-      byUnderlying[o.underlying].push(o);
-    }
-    for (const [underlying, opts] of Object.entries(byUnderlying)) {
-      const prices = await fetchOptionPricesForUnderlying(underlying, opts);
-      Object.assign(S.optionPrices, prices);
-      await delay(220);
+  // Options prices via Tradier
+  if (S.options.length) {
+    if (!S.settings.tradierKey) {
+      toast('Add a Tradier token in Settings for live options prices.', 'error');
+    } else {
+      await fetchOptionPricesWithTradier();
     }
   }
 
@@ -1919,10 +1934,14 @@ function init() {
   });
 
   // ---- SETTINGS ----
-  el('finnhub-key').value = S.settings.finnhubKey || '';
+  el('finnhub-key').value        = S.settings.finnhubKey  || '';
+  el('tradier-key').value        = S.settings.tradierKey  || '';
+  el('tradier-sandbox').checked  = S.settings.tradierSandbox !== false;
 
   el('save-settings-btn').addEventListener('click', () => {
-    S.settings.finnhubKey = el('finnhub-key').value.trim();
+    S.settings.finnhubKey     = el('finnhub-key').value.trim();
+    S.settings.tradierKey     = el('tradier-key').value.trim();
+    S.settings.tradierSandbox = el('tradier-sandbox').checked;
     save();
     toast('Settings saved!', 'success');
   });

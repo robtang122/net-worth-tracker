@@ -689,16 +689,33 @@
       </div>
 
       <div class="card settings-card">
-        <h3>Live Stock Prices</h3>
+        <h3>Live Stock Prices — Finnhub</h3>
         <p class="settings-desc">
-          Enter a free Finnhub API key to fetch live stock prices.
-          Get one at <a href="https://finnhub.io" target="_blank">finnhub.io</a> — free tier gives 60 calls/min.
+          Used for live stock quotes. Get a free key at <a href="https://finnhub.io" target="_blank">finnhub.io</a> — free tier gives 60 calls/min.
         </p>
         <div class="form-group" style="max-width:420px">
           <label>Finnhub API Key</label>
           <input type="text" id="finnhub-key" placeholder="Paste your API key here">
         </div>
-        <button class="btn btn-primary" id="save-settings-btn" style="margin-top:12px">Save</button>
+      </div>
+
+      <div class="card settings-card">
+        <h3>Live Options Pricing — Tradier</h3>
+        <p class="settings-desc">
+          Used for real-time options chain data. Get a free token at <a href="https://developer.tradier.com" target="_blank">developer.tradier.com</a> — no brokerage account needed for sandbox (15-min delay). Open a free Tradier Lite account for real-time data.
+        </p>
+        <div class="form-group" style="max-width:420px">
+          <label>Tradier API Token</label>
+          <input type="text" id="tradier-key" placeholder="Paste your Tradier token here">
+        </div>
+        <div class="toggle-row" style="margin-top:12px;max-width:420px">
+          <span>Use Sandbox <small style="color:var(--muted)">(15-min delay, no account needed)</small></span>
+          <label class="toggle">
+            <input type="checkbox" id="tradier-sandbox" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <button class="btn btn-primary" id="save-settings-btn" style="margin-top:16px">Save All Settings</button>
       </div>
 
       <div class="card settings-card">
