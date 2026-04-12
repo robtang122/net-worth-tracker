@@ -898,6 +898,52 @@ function renderCrypto() {
 }
 
 // ============================================================
+// PRIVATE — TRANSACTION HELPERS
+// ============================================================
+function privCalled(p) {
+  if (p.transactions?.length) return p.transactions.filter(t => t.type === 'call').reduce((s, t) => s + t.amount, 0);
+  return p.called || 0;
+}
+function privDistributions(p) {
+  if (p.transactions?.length) return p.transactions.filter(t => t.type === 'distribution').reduce((s, t) => s + t.amount, 0);
+  return p.distributions || 0;
+}
+
+function togglePrivateTxns(id) {
+  const row = document.getElementById(`txn-panel-${id}`);
+  if (!row) return;
+  row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+function addPrivateTxn(id) {
+  const p      = S.private.find(p => p.id === id);
+  if (!p) return;
+  const type   = document.getElementById(`ptxn-type-${id}`).value;
+  const amount = parseFloat(document.getElementById(`ptxn-amt-${id}`).value);
+  const date   = document.getElementById(`ptxn-date-${id}`).value;
+  const notes  = document.getElementById(`ptxn-notes-${id}`).value.trim();
+  if (isNaN(amount) || amount <= 0) { toast('Enter a valid amount.', 'error'); return; }
+  if (!date) { toast('Enter a date.', 'error'); return; }
+  if (!p.transactions) p.transactions = [];
+  p.transactions.push({ id: uid(), type, amount, date, notes });
+  save(); renderPrivate();
+  // Re-open the panel after re-render
+  const panel = document.getElementById(`txn-panel-${id}`);
+  if (panel) panel.style.display = '';
+  toast(`${type === 'call' ? 'Capital call' : 'Distribution'} logged.`, 'success');
+}
+
+function delPrivateTxn(investId, txnId) {
+  const p = S.private.find(p => p.id === investId);
+  if (!p?.transactions) return;
+  if (!confirm('Delete this transaction?')) return;
+  p.transactions = p.transactions.filter(t => t.id !== txnId);
+  save(); renderPrivate();
+  const panel = document.getElementById(`txn-panel-${investId}`);
+  if (panel) panel.style.display = '';
+}
+
+// ============================================================
 // RENDER — PRIVATE
 // ============================================================
 function renderPrivate() {
@@ -913,60 +959,105 @@ function renderPrivate() {
   }
 
   const fundTypes = [
-    { key: 'real-estate-fund', label: 'Real Estate Funds',      badge: 'badge-re-fund' },
-    { key: 'pe-fund',          label: 'Private Equity Funds',   badge: 'badge-pe-fund' },
-    { key: 'venture-fund',     label: 'Venture / Startup Funds',badge: 'badge-vc-fund' },
-    { key: 'other',            label: 'Other',                  badge: 'badge-other2'  },
-    // Backward compat: old categories
-    { key: 'real-estate',    label: 'Real Estate',    badge: 'badge-re-fund' },
-    { key: 'private-equity', label: 'Private Equity', badge: 'badge-pe-fund' },
-    { key: 'startup-equity', label: 'Startup Equity', badge: 'badge-vc-fund' },
+    { key: 'real-estate-fund', label: 'Real Estate Funds',       badge: 'badge-re-fund' },
+    { key: 'pe-fund',          label: 'Private Equity Funds',    badge: 'badge-pe-fund' },
+    { key: 'venture-fund',     label: 'Venture / Startup Funds', badge: 'badge-vc-fund' },
+    { key: 'other',            label: 'Other',                   badge: 'badge-other2'  },
+    { key: 'real-estate',      label: 'Real Estate',             badge: 'badge-re-fund' },
+    { key: 'private-equity',   label: 'Private Equity',          badge: 'badge-pe-fund' },
+    { key: 'startup-equity',   label: 'Startup Equity',          badge: 'badge-vc-fund' },
   ];
 
-  // Group items — deduplicate display if old + new categories overlap
-  const seen = new Set();
   container.innerHTML = fundTypes.map(ft => {
-    const items = S.private.filter(p => {
-      const key = p.fundType || p.category || 'other';
-      return key === ft.key;
-    });
+    const items = S.private.filter(p => (p.fundType || p.category || 'other') === ft.key);
     if (!items.length) return '';
 
-    const totalVal    = items.reduce((s, p) => s + (p.currentValue || 0), 0);
-    const totalCalled = items.reduce((s, p) => s + (p.called || 0), 0);
+    const totalVal = items.reduce((s, p) => s + (p.currentValue || 0), 0);
 
     const rows = items.map(p => {
-      const called        = p.called || 0;
+      const called        = privCalled(p);
+      const distributions = privDistributions(p);
       const commitment    = p.commitment || 0;
-      const distributions = p.distributions || 0;
       const currentValue  = p.currentValue || 0;
       const uncalled      = Math.max(commitment - called, 0);
       const moic          = called > 0 ? ((currentValue + distributions) / called).toFixed(2) + 'x' : '—';
       const updated       = p.updatedAt ? fmtRelative(p.updatedAt) : '';
+      const txns          = (p.transactions || []).sort((a, b) => new Date(b.date) - new Date(a.date));
+      const hasTxns       = txns.length > 0;
 
-      // Check if this is an old-format item (no commitment fields)
       const isOldFormat = !p.commitment && !p.called && !p.fundType;
+
+      const txnPanel = `
+        <tr id="txn-panel-${p.id}" style="display:none">
+          <td colspan="9" style="padding:0">
+            <div class="txn-panel">
+              <div class="txn-panel-header">
+                <div class="txn-stat">
+                  <span class="txn-stat-label">Total Called</span>
+                  <span class="txn-stat-value">${fmt(called)}</span>
+                </div>
+                <div class="txn-stat">
+                  <span class="txn-stat-label">Total Distributions</span>
+                  <span class="txn-stat-value pos">${fmt(distributions)}</span>
+                </div>
+                <div class="txn-stat">
+                  <span class="txn-stat-label">Net Capital In</span>
+                  <span class="txn-stat-value">${fmt(called - distributions)}</span>
+                </div>
+              </div>
+              <div class="txn-list">
+                ${hasTxns
+                  ? txns.map(t => `
+                    <div class="txn-item">
+                      <span class="txn-item-date">${fmtDate(t.date)}</span>
+                      <span class="badge ${t.type === 'call' ? 'badge-txn-call' : 'badge-txn-dist'}">${t.type === 'call' ? 'Capital Call' : 'Distribution'}</span>
+                      <span class="txn-item-amt ${t.type === 'distribution' ? 'pos' : ''}">${t.type === 'distribution' ? '+' : '-'}${fmt(t.amount)}</span>
+                      <span class="txn-item-notes">${t.notes || ''}</span>
+                      <button class="icon-btn" onclick="delPrivateTxn('${p.id}','${t.id}')" title="Delete">✕</button>
+                    </div>`).join('')
+                  : '<div style="color:var(--muted);font-size:13px;padding:8px 0">No transactions logged yet.</div>'
+                }
+              </div>
+              <div class="txn-add-form">
+                <div class="form-group">
+                  <label>Type</label>
+                  <select id="ptxn-type-${p.id}">
+                    <option value="call">Capital Call</option>
+                    <option value="distribution">Distribution</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Amount ($)</label>
+                  <input type="number" id="ptxn-amt-${p.id}" placeholder="50000" min="0" step="any" style="width:110px">
+                </div>
+                <div class="form-group">
+                  <label>Date</label>
+                  <input type="date" id="ptxn-date-${p.id}" value="${new Date().toISOString().slice(0,10)}">
+                </div>
+                <div class="form-group">
+                  <label>Notes</label>
+                  <input type="text" id="ptxn-notes-${p.id}" placeholder="Optional" style="width:160px">
+                </div>
+                <button class="btn btn-primary" onclick="addPrivateTxn('${p.id}')" style="align-self:flex-end;margin-bottom:1px">Log</button>
+              </div>
+            </div>
+          </td>
+        </tr>`;
 
       if (isOldFormat) {
         const pl    = p.costBasis ? currentValue - p.costBasis : null;
         const plPct = p.costBasis ? (pl / p.costBasis) * 100 : null;
         return `<tr>
-          <td>
-            <strong>${p.name}</strong>
-            ${p.notes ? `<br><span style="color:var(--muted);font-size:11px">${p.notes}</span>` : ''}
-          </td>
+          <td><strong>${p.name}</strong>${p.notes ? `<br><span style="color:var(--muted);font-size:11px">${p.notes}</span>` : ''}</td>
           <td colspan="3" style="color:var(--muted);font-size:12px">Legacy entry — re-add to use fund model</td>
           <td>${fmt(currentValue)}</td>
-          <td>${pl != null
-            ? `<span class="${pl >= 0 ? 'pos' : 'neg'}">${fmt(pl)} <small>(${fmtPct(plPct)})</small></span>`
-            : '—'
-          }</td>
+          <td>${pl != null ? `<span class="${pl >= 0 ? 'pos' : 'neg'}">${fmt(pl)} <small>(${fmtPct(plPct)})</small></span>` : '—'}</td>
           <td style="color:var(--muted);font-size:11px">${updated}</td>
           <td>
             <button class="icon-btn" onclick="editPrivate('${p.id}')" title="Edit">✏</button>
             <button class="icon-btn" onclick="delPrivate('${p.id}')"  title="Delete">✕</button>
           </td>
-        </tr>`;
+        </tr>${txnPanel}`;
       }
 
       return `<tr>
@@ -975,17 +1066,18 @@ function renderPrivate() {
           ${p.manager ? `<br><span style="color:var(--muted);font-size:11px">${p.manager}</span>` : ''}
         </td>
         <td>${commitment > 0 ? fmt(commitment) : '—'}</td>
-        <td>${called > 0 ? fmt(called) : '—'}</td>
+        <td>${called > 0 ? fmt(called) : '—'}${hasTxns ? ` <span style="color:var(--muted);font-size:10px">(${txns.filter(t=>t.type==='call').length} calls)</span>` : ''}</td>
         <td>${commitment > 0 ? fmt(uncalled) : '—'}</td>
-        <td>${distributions > 0 ? fmt(distributions) : '$0'}</td>
+        <td>${distributions > 0 ? `<span class="pos">${fmt(distributions)}</span>` : '$0'}${hasTxns && txns.filter(t=>t.type==='distribution').length > 0 ? ` <span style="color:var(--muted);font-size:10px">(${txns.filter(t=>t.type==='distribution').length})</span>` : ''}</td>
         <td><strong>${fmt(currentValue)}</strong></td>
         <td>${moic}</td>
         <td style="color:var(--muted);font-size:11px">${updated}</td>
         <td>
+          <button class="icon-btn" onclick="togglePrivateTxns('${p.id}')" title="Transactions">≡</button>
           <button class="icon-btn" onclick="editPrivate('${p.id}')" title="Edit">✏</button>
           <button class="icon-btn" onclick="delPrivate('${p.id}')"  title="Delete">✕</button>
         </td>
-      </tr>`;
+      </tr>${txnPanel}`;
     }).join('');
 
     return `<div class="card priv-group">

@@ -635,6 +635,56 @@ main {
   font-weight: 700;
 }
 
+.txn-panel {
+  padding: 14px 16px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+}
+
+.txn-panel-header {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.txn-stat { display: flex; flex-direction: column; gap: 2px; }
+.txn-stat-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.txn-stat-value { font-weight: 700; font-size: 14px; }
+
+.txn-list { margin-bottom: 14px; }
+
+.txn-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.txn-item:last-child { border-bottom: none; }
+.txn-item-date  { color: var(--muted); min-width: 90px; }
+.txn-item-amt   { font-weight: 600; min-width: 90px; }
+.txn-item-notes { color: var(--muted); flex: 1; }
+
+.txn-add-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.txn-add-form .form-group { margin: 0; }
+.txn-add-form label { font-size: 11px; margin-bottom: 4px; }
+.txn-add-form input,
+.txn-add-form select { padding: 6px 8px; font-size: 13px; }
+
+.badge-txn-call { background: #16a34a20; color: #4ade80; border: 1px solid #16a34a40; }
+.badge-txn-dist { background: #7c3aed20; color: #a78bfa; border: 1px solid #7c3aed40; }
+[data-theme="light"] .badge-txn-call { background: #dcfce7; color: #16a34a; border: none; }
+[data-theme="light"] .badge-txn-dist { background: #ede9fe; color: #6d28d9; border: none; }
+
 /* ============================================================
    HISTORY
    ============================================================ */
