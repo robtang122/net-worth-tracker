@@ -2,18 +2,21 @@
 // STORAGE KEYS
 // ============================================================
 const K = {
-  stocks:       'nwt_stocks',
-  crypto:       'nwt_crypto',
-  private:      'nwt_private',
-  accounts:     'nwt_accounts',
-  options:      'nwt_options',
-  trades:       'nwt_trades',
-  snapshots:    'nwt_snapshots',
-  settings:     'nwt_settings',
-  prices:       'nwt_prices',
-  cryptoPrices: 'nwt_crypto_prices',
-  optionPrices: 'nwt_option_prices',
+  stocks:              'nwt_stocks',
+  crypto:              'nwt_crypto',
+  private:             'nwt_private',
+  accounts:            'nwt_accounts',
+  options:             'nwt_options',
+  trades:              'nwt_trades',
+  snapshots:           'nwt_snapshots',
+  settings:            'nwt_settings',
+  prices:              'nwt_prices',
+  cryptoPrices:        'nwt_crypto_prices',
+  optionPrices:        'nwt_option_prices',
+  optionPriceFetched:  'nwt_option_price_fetched',
 };
+
+const OPTION_STALE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 // ============================================================
 // STATE
@@ -26,10 +29,11 @@ let S = {
   options:      [],
   trades:       [],
   snapshots:    [],
-  settings:     { finnhubKey: '', tradierKey: '', tradierSandbox: true, darkMode: true, cryptoDeposited: null },
+  settings:     { finnhubKey: '', tradierKey: '', tradierSandbox: true, marketDataKey: '', darkMode: true, cryptoDeposited: null },
   prices:       {},
   cryptoPrices: {},
-  optionPrices: {}, // keyed by option id
+  optionPrices:       {}, // keyed by option id
+  optionPriceFetched: {}, // keyed by option id → ISO timestamp of last fetch
   filters:      { broker: 'all', type: 'all' },
 };
 
@@ -46,10 +50,11 @@ function load() {
   S.options      = parse(K.options,      []);
   S.trades       = parse(K.trades,       []);
   S.snapshots    = parse(K.snapshots,    []);
-  S.settings     = parse(K.settings,     { finnhubKey: '', tradierKey: '', tradierSandbox: true, darkMode: true, cryptoDeposited: null });
+  S.settings     = parse(K.settings,     { finnhubKey: '', tradierKey: '', tradierSandbox: true, marketDataKey: '', darkMode: true, cryptoDeposited: null });
   S.prices       = parse(K.prices,       {});
   S.cryptoPrices = parse(K.cryptoPrices, {});
-  S.optionPrices = parse(K.optionPrices, {});
+  S.optionPrices        = parse(K.optionPrices,       {});
+  S.optionPriceFetched  = parse(K.optionPriceFetched, {});
   if (S.settings.darkMode === undefined) S.settings.darkMode = true;
   // Migrate old marginDebt field → cash (positive debt → negative cash)
   S.accounts.forEach(a => {
@@ -71,7 +76,8 @@ function save() {
   ls(K.settings,     S.settings);
   ls(K.prices,       S.prices);
   ls(K.cryptoPrices, S.cryptoPrices);
-  ls(K.optionPrices, S.optionPrices);
+  ls(K.optionPrices,       S.optionPrices);
+  ls(K.optionPriceFetched, S.optionPriceFetched);
 }
 
 function parse(key, fallback) {
@@ -310,6 +316,47 @@ async function fetchOptionPricesWithTradier() {
   }
 }
 
+// Returns { fetched, skipped } counts
+async function fetchOptionPricesWithMarketData(forceAll = false) {
+  if (!S.settings.marketDataKey || !S.options.length) return { fetched: 0, skipped: 0 };
+  const token = S.settings.marketDataKey;
+  const now   = Date.now();
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+
+  let fetched = 0, skipped = 0;
+
+  for (const o of S.options) {
+    // Skip expired options — no meaningful price to fetch
+    const expDate = new Date(o.expiration + 'T00:00:00');
+    if (expDate < today) { skipped++; continue; }
+
+    // Skip if price is still fresh (within staleness window)
+    if (!forceAll) {
+      const lastFetch = S.optionPriceFetched[o.id];
+      if (lastFetch && (now - new Date(lastFetch).getTime()) < OPTION_STALE_MS) {
+        skipped++; continue;
+      }
+    }
+
+    try {
+      const url = `https://api.marketdata.app/v1/options/chain/${o.underlying}/` +
+        `?expiration=${o.expiration}&strike=${o.strike}&side=${o.optionType}&token=${token}`;
+      const res  = await fetch(url);
+      const data = await res.json();
+      if (data.s !== 'ok' || !data.mid?.length) { skipped++; continue; }
+      const price = data.mid[0];
+      if (price > 0) {
+        S.optionPrices[o.id]       = price;
+        S.optionPriceFetched[o.id] = new Date().toISOString();
+        fetched++;
+      } else { skipped++; }
+    } catch { skipped++; }
+    await delay(300);
+  }
+
+  return { fetched, skipped };
+}
+
 async function refreshPrices() {
   const btn      = document.getElementById('refresh-btn');
   btn.textContent = '↻ Refreshing…';
@@ -328,14 +375,7 @@ async function refreshPrices() {
     }
   }
 
-  // Options prices via Tradier
-  if (S.options.length) {
-    if (!S.settings.tradierKey) {
-      toast('Add a Tradier token in Settings for live options prices.', 'error');
-    } else {
-      await fetchOptionPricesWithTradier();
-    }
-  }
+  // Options have their own refresh button — skip here
 
   if (S.crypto.length) {
     const ids    = [...new Set(S.crypto.map(c => c.coinId))];
@@ -356,6 +396,37 @@ async function refreshPrices() {
 }
 
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function refreshOptions() {
+  if (!S.options.length) { toast('No options to refresh.'); return; }
+  if (!S.settings.marketDataKey && !S.settings.tradierKey) {
+    toast('Add a MarketData.app token in Settings for options prices.', 'error'); return;
+  }
+
+  const btn = el('refresh-options-btn');
+  btn.textContent = '↻ Fetching…';
+  btn.disabled    = true;
+
+  let fetched = 0, skipped = 0;
+
+  if (S.settings.marketDataKey) {
+    ({ fetched, skipped } = await fetchOptionPricesWithMarketData());
+  } else {
+    await fetchOptionPricesWithTradier();
+    fetched = S.options.length;
+  }
+
+  save();
+  renderOptions();
+
+  const msg = fetched > 0
+    ? `Options updated: ${fetched} fetched${skipped ? `, ${skipped} skipped (fresh or expired)` : ''}`
+    : `All prices are fresh — next update in ~12h (${skipped} skipped)`;
+  toast(msg, fetched > 0 ? 'success' : 'info');
+
+  btn.textContent = '↻ Refresh Options';
+  btn.disabled    = false;
+}
 
 // ============================================================
 // RENDER — ALL
@@ -740,7 +811,10 @@ function renderOptions() {
       <td>${dteLabel}</td>
       <td>${contracts}</td>
       <td>${fmtP(premium)}</td>
-      <td>${price != null ? fmtP(price) : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>
+        ${price != null ? fmtP(price) : '<span style="color:var(--muted)">—</span>'}
+        ${S.optionPriceFetched[o.id] ? `<br><span style="color:var(--muted);font-size:10px">${fmtRelative(S.optionPriceFetched[o.id])}</span>` : ''}
+      </td>
       <td>${val != null ? fmt(val) : '—'}</td>
       <td>${expired
         ? `<span class="${expiredPL >= 0 ? 'pos' : 'neg'}">${fmt(expiredPL)}</span>`
@@ -1636,6 +1710,7 @@ function init() {
 
   // Header actions
   el('refresh-btn').addEventListener('click', refreshPrices);
+  el('refresh-options-btn').addEventListener('click', refreshOptions);
   el('snapshot-btn').addEventListener('click', takeSnapshot);
   el('history-snapshot-btn').addEventListener('click', takeSnapshot);
 
@@ -1934,14 +2009,16 @@ function init() {
   });
 
   // ---- SETTINGS ----
-  el('finnhub-key').value        = S.settings.finnhubKey  || '';
-  el('tradier-key').value        = S.settings.tradierKey  || '';
+  el('finnhub-key').value        = S.settings.finnhubKey    || '';
+  el('tradier-key').value        = S.settings.tradierKey    || '';
   el('tradier-sandbox').checked  = S.settings.tradierSandbox !== false;
+  el('marketdata-key').value     = S.settings.marketDataKey || '';
 
   el('save-settings-btn').addEventListener('click', () => {
     S.settings.finnhubKey     = el('finnhub-key').value.trim();
     S.settings.tradierKey     = el('tradier-key').value.trim();
     S.settings.tradierSandbox = el('tradier-sandbox').checked;
+    S.settings.marketDataKey  = el('marketdata-key').value.trim();
     save();
     toast('Settings saved!', 'success');
   });

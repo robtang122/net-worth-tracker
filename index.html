@@ -257,6 +257,7 @@
       <!-- OPTIONS -->
       <div class="section-header" style="margin-top:8px">
         <h2>Options</h2>
+        <button class="btn btn-ghost" id="refresh-options-btn">↻ Refresh Options</button>
         <button class="btn btn-primary" id="add-option-toggle">+ Add Option</button>
       </div>
 
@@ -700,16 +701,28 @@
       </div>
 
       <div class="card settings-card">
-        <h3>Live Options Pricing — Tradier</h3>
+        <h3>Options Pricing — MarketData.app</h3>
         <p class="settings-desc">
-          Used for real-time options chain data. Get a free token at <a href="https://developer.tradier.com" target="_blank">developer.tradier.com</a> — no brokerage account needed for sandbox (15-min delay). Open a free Tradier Lite account for real-time data.
+          Used for options chain data (delayed). Free tier gives 100 requests/day — enough for a handful of LEAPS.
+          Sign up at <a href="https://marketdata.app" target="_blank">marketdata.app</a>, then generate a token from your dashboard.
+        </p>
+        <div class="form-group" style="max-width:420px">
+          <label>MarketData.app Token</label>
+          <input type="text" id="marketdata-key" placeholder="Paste your token here">
+        </div>
+      </div>
+
+      <div class="card settings-card">
+        <h3>Options Pricing — Tradier <small style="color:var(--muted);font-weight:400">(fallback)</small></h3>
+        <p class="settings-desc">
+          Alternative if you have a Tradier account. Only used if no MarketData token is set.
         </p>
         <div class="form-group" style="max-width:420px">
           <label>Tradier API Token</label>
           <input type="text" id="tradier-key" placeholder="Paste your Tradier token here">
         </div>
         <div class="toggle-row" style="margin-top:12px;max-width:420px">
-          <span>Use Sandbox <small style="color:var(--muted)">(15-min delay, no account needed)</small></span>
+          <span>Use Sandbox <small style="color:var(--muted)">(15-min delay)</small></span>
           <label class="toggle">
             <input type="checkbox" id="tradier-sandbox" checked>
             <span class="toggle-slider"></span>
