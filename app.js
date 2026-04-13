@@ -900,6 +900,54 @@ function renderCrypto() {
 // ============================================================
 // PRIVATE — TRANSACTION HELPERS
 // ============================================================
+// XIRR — extended IRR using Newton-Raphson. Expects [{amount, date}] where
+// outflows are negative and inflows are positive. Returns annualized rate or null.
+function xirr(cashflows) {
+  if (!cashflows || cashflows.length < 2) return null;
+  const hasNeg = cashflows.some(c => c.amount < 0);
+  const hasPos = cashflows.some(c => c.amount > 0);
+  if (!hasNeg || !hasPos) return null;
+
+  const t0 = new Date(cashflows[0].date).getTime();
+  const years = cashflows.map(c => (new Date(c.date).getTime() - t0) / (365.25 * 24 * 60 * 60 * 1000));
+
+  function npv(r) {
+    return cashflows.reduce((sum, c, i) => sum + c.amount / Math.pow(1 + r, years[i]), 0);
+  }
+  function dnpv(r) {
+    return cashflows.reduce((sum, c, i) => sum - years[i] * c.amount / Math.pow(1 + r, years[i] + 1), 0);
+  }
+
+  let r = 0.1;
+  for (let i = 0; i < 200; i++) {
+    const n = npv(r);
+    if (Math.abs(n) < 1e-7) return r;
+    const d = dnpv(r);
+    if (Math.abs(d) < 1e-10) break;
+    const rNew = r - n / d;
+    if (Math.abs(rNew - r) < 1e-7) return rNew;
+    r = rNew;
+    if (r <= -1) r = -0.9999;
+  }
+  return null;
+}
+
+function privIRR(p) {
+  const txns = p.transactions || [];
+  if (!txns.length) return null;
+  const flows = txns.map(t => ({
+    amount: t.type === 'call' ? -t.amount : t.amount,
+    date: t.date,
+  }));
+  // Add today's current value as the terminal cash flow
+  const currentValue = p.currentValue || 0;
+  if (currentValue > 0) {
+    flows.push({ amount: currentValue, date: new Date().toISOString().slice(0, 10) });
+  }
+  flows.sort((a, b) => new Date(a.date) - new Date(b.date));
+  return xirr(flows);
+}
+
 function privCalled(p) {
   if (p.transactions?.length) return p.transactions.filter(t => t.type === 'call').reduce((s, t) => s + t.amount, 0);
   return p.called || 0;
@@ -981,6 +1029,8 @@ function renderPrivate() {
       const currentValue  = p.currentValue || 0;
       const uncalled      = Math.max(commitment - called, 0);
       const moic          = called > 0 ? ((currentValue + distributions) / called).toFixed(2) + 'x' : '—';
+      const irrVal        = privIRR(p);
+      const irrDisplay    = irrVal != null ? `<span class="${irrVal >= 0 ? 'pos' : 'neg'}">${(irrVal * 100).toFixed(1)}%</span>` : '—';
       const updated       = p.updatedAt ? fmtRelative(p.updatedAt) : '';
       const txns          = (p.transactions || []).sort((a, b) => new Date(b.date) - new Date(a.date));
       const hasTxns       = txns.length > 0;
@@ -989,7 +1039,7 @@ function renderPrivate() {
 
       const txnPanel = `
         <tr id="txn-panel-${p.id}" style="display:none">
-          <td colspan="9" style="padding:0">
+          <td colspan="10" style="padding:0">
             <div class="txn-panel">
               <div class="txn-panel-header">
                 <div class="txn-stat">
@@ -1071,6 +1121,7 @@ function renderPrivate() {
         <td>${distributions > 0 ? `<span class="pos">${fmt(distributions)}</span>` : '$0'}${hasTxns && txns.filter(t=>t.type==='distribution').length > 0 ? ` <span style="color:var(--muted);font-size:10px">(${txns.filter(t=>t.type==='distribution').length})</span>` : ''}</td>
         <td><strong>${fmt(currentValue)}</strong></td>
         <td>${moic}</td>
+        <td>${irrDisplay}</td>
         <td style="color:var(--muted);font-size:11px">${updated}</td>
         <td>
           <button class="icon-btn" onclick="togglePrivateTxns('${p.id}')" title="Transactions">≡</button>
@@ -1096,6 +1147,7 @@ function renderPrivate() {
               <th>Distributions</th>
               <th>Current Value</th>
               <th>MOIC</th>
+              <th>IRR</th>
               <th>Updated</th>
               <th></th>
             </tr>
