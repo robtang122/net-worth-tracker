@@ -14,6 +14,7 @@ const K = {
   cryptoPrices:        'nwt_crypto_prices',
   optionPrices:        'nwt_option_prices',
   optionPriceFetched:  'nwt_option_price_fetched',
+  ledger:              'nwt_ledger',
 };
 
 const OPTION_STALE_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -34,6 +35,7 @@ let S = {
   cryptoPrices: {},
   optionPrices:       {}, // keyed by option id
   optionPriceFetched: {}, // keyed by option id → ISO timestamp of last fetch
+  ledger:       {},       // { [accountId]: [{id, date, type, description, amount, auto}] }
   filters:      { broker: 'all', type: 'all' },
 };
 
@@ -55,12 +57,28 @@ function load() {
   S.cryptoPrices = parse(K.cryptoPrices, {});
   S.optionPrices        = parse(K.optionPrices,       {});
   S.optionPriceFetched  = parse(K.optionPriceFetched, {});
+  S.ledger              = parse(K.ledger,             {});
   if (S.settings.darkMode === undefined) S.settings.darkMode = true;
   // Migrate old marginDebt field → cash (positive debt → negative cash)
   S.accounts.forEach(a => {
     if (a.cash === undefined && a.marginDebt !== undefined) {
       a.cash = -(a.marginDebt || 0);
       delete a.marginDebt;
+    }
+  });
+  // Migrate a.cash → opening balance ledger entry (one-time, only if no ledger entries exist)
+  S.accounts.forEach(a => {
+    const existing = S.ledger[a.id];
+    if ((!existing || existing.length === 0) && a.cash !== undefined && a.cash !== 0) {
+      if (!S.ledger[a.id]) S.ledger[a.id] = [];
+      S.ledger[a.id].push({
+        id: uid(),
+        date: new Date().toISOString().slice(0, 10),
+        type: 'opening_balance',
+        description: 'Opening balance (migrated)',
+        amount: a.cash,
+        auto: false,
+      });
     }
   });
 }
@@ -78,6 +96,7 @@ function save() {
   ls(K.cryptoPrices, S.cryptoPrices);
   ls(K.optionPrices,       S.optionPrices);
   ls(K.optionPriceFetched, S.optionPriceFetched);
+  ls(K.ledger,             S.ledger);
 }
 
 function parse(key, fallback) {
@@ -119,16 +138,68 @@ function realizedNetPL()  { return S.trades.reduce((s, t) => s + (t.pl || 0), 0)
 function realizedGains()  { return S.trades.filter(t => t.pl > 0).reduce((s, t) => s + t.pl, 0); }
 function realizedLosses() { return S.trades.filter(t => t.pl < 0).reduce((s, t) => s + t.pl, 0); }
 
-function totalCashBalance() {
-  return S.accounts.reduce((sum, a) => sum + (a.cash || 0), 0);
+// Cash balance for one account — computed from ledger entries
+function accountCashBalance(accountId) {
+  return (S.ledger[accountId] || []).reduce((sum, e) => sum + e.amount, 0);
 }
 
-// For backward compat and snapshot display: sum of negative cash values as positive debt figure
+function totalCashBalance() {
+  return S.accounts.reduce((sum, a) => sum + accountCashBalance(a.id), 0);
+}
+
+// For snapshot display: sum of negative balances as positive debt figure
 function totalMarginDebt() {
   return S.accounts.reduce((sum, a) => {
-    const cash = a.cash || 0;
+    const cash = accountCashBalance(a.id);
     return cash < 0 ? sum + Math.abs(cash) : sum;
   }, 0);
+}
+
+// Add a ledger entry without saving — caller must call save()
+function addLedgerEntry(accountId, entry) {
+  if (!accountId) return;
+  if (!S.ledger[accountId]) S.ledger[accountId] = [];
+  S.ledger[accountId].push({ id: uid(), ...entry });
+}
+
+function ledgerTypeLabel(type) {
+  return { opening_balance: 'Opening Balance', stock_sale: 'Stock Sale', crypto_sale: 'Crypto Sale',
+           option_premium: 'Option Premium', option_close: 'Option Close', manual: 'Manual' }[type] || type;
+}
+
+function ledgerTypeBadgeClass(type) {
+  return { opening_balance: 'badge-ledger-opening', stock_sale: 'badge-ledger-stock',
+           crypto_sale: 'badge-ledger-stock', option_premium: 'badge-ledger-premium',
+           option_close: 'badge-ledger-close', manual: 'badge-ledger-manual' }[type] || 'badge-ledger-manual';
+}
+
+function toggleAccountLedger(accountId) {
+  const panel = document.getElementById(`ledger-panel-${accountId}`);
+  if (panel) panel.style.display = panel.style.display === 'none' ? '' : 'none';
+}
+
+function addManualLedgerEntry(accountId) {
+  const date   = document.getElementById(`le-date-${accountId}`).value;
+  const desc   = document.getElementById(`le-desc-${accountId}`).value.trim();
+  const amount = parseFloat(document.getElementById(`le-amount-${accountId}`).value);
+  if (!date) { toast('Enter a date.', 'error'); return; }
+  if (isNaN(amount) || amount === 0) { toast('Enter a non-zero amount.', 'error'); return; }
+  addLedgerEntry(accountId, { date, type: 'manual', description: desc || 'Manual entry', amount, auto: false });
+  save(); renderAccounts(); renderDashboard(); renderHeader();
+  document.getElementById(`le-desc-${accountId}`).value   = '';
+  document.getElementById(`le-amount-${accountId}`).value = '';
+  const panel = document.getElementById(`ledger-panel-${accountId}`);
+  if (panel) panel.style.display = '';
+  toast('Entry added.', 'success');
+}
+
+function deleteLedgerEntry(accountId, entryId) {
+  if (!confirm('Delete this ledger entry? This will change the account cash balance.')) return;
+  if (S.ledger[accountId]) S.ledger[accountId] = S.ledger[accountId].filter(e => e.id !== entryId);
+  save(); renderAccounts(); renderDashboard(); renderHeader();
+  const panel = document.getElementById(`ledger-panel-${accountId}`);
+  if (panel) panel.style.display = '';
+  toast('Entry deleted.', 'info');
 }
 
 function totalNetWorth() {
@@ -561,10 +632,12 @@ function renderAccounts() {
     return;
   }
 
+  const today = new Date().toISOString().slice(0, 10);
+
   const cards = S.accounts.map(a => {
     const holdings   = brokerHoldings(a);
     const costBasis  = brokerCostBasis(a);
-    const cash       = a.cash || 0;
+    const cash       = accountCashBalance(a.id);
     const equity     = holdings + cash;
     const deposited  = a.deposited || null;
     const wealthGain = (deposited && holdings > 0) ? holdings - deposited : null;
@@ -629,8 +702,37 @@ function renderAccounts() {
       ${wealthRow}
 
       <div class="account-card-actions">
+        <button class="btn btn-ghost btn-sm" onclick="toggleAccountLedger('${a.id}')">≡ Ledger${(S.ledger[a.id]||[]).length ? ` (${(S.ledger[a.id]||[]).length})` : ''}</button>
         <button class="icon-btn" onclick="editAccount('${a.id}')" title="Edit">✏</button>
         <button class="icon-btn" onclick="delAccount('${a.id}')" title="Delete">✕</button>
+      </div>
+
+      <div class="ledger-panel" id="ledger-panel-${a.id}" style="display:none">
+        ${(() => {
+          const rawEntries = (S.ledger[a.id] || []).slice().sort((x, y) => new Date(x.date) - new Date(y.date));
+          let running = 0;
+          const withBal = rawEntries.map(e => { running += e.amount; return { ...e, balance: running }; });
+          const entries = withBal.reverse();
+          const entriesHtml = entries.length
+            ? entries.map(e => `
+              <div class="ledger-entry">
+                <span class="ledger-date">${fmtDate(e.date)}</span>
+                <span class="badge ${ledgerTypeBadgeClass(e.type)}">${ledgerTypeLabel(e.type)}</span>
+                <span class="ledger-desc">${e.description || ''}</span>
+                <span class="ledger-amount ${e.amount >= 0 ? 'pos' : 'neg'}">${e.amount >= 0 ? '+' : ''}${fmt(e.amount)}</span>
+                <span class="ledger-balance">${fmt(e.balance)}</span>
+                <button class="icon-btn" onclick="deleteLedgerEntry('${a.id}','${e.id}')" title="Delete">✕</button>
+              </div>`).join('')
+            : '<div class="ledger-empty">No entries yet — transactions will appear here automatically.</div>';
+          return `
+            <div class="ledger-entries">${entriesHtml}</div>
+            <div class="ledger-add-form">
+              <input type="date" id="le-date-${a.id}" value="${today}">
+              <input type="text" id="le-desc-${a.id}" placeholder="Description (e.g. Dividend)">
+              <input type="number" id="le-amount-${a.id}" placeholder="Amount (neg = out)" step="any" style="width:140px">
+              <button class="btn btn-primary btn-sm" onclick="addManualLedgerEntry('${a.id}')">+ Entry</button>
+            </div>`;
+        })()}
       </div>
     </div>`;
   }).join('');
@@ -1478,7 +1580,7 @@ function editAccount(id) {
   el('a-broker').value     = a.broker;
   el('a-label').value      = a.label || '';
   el('a-deposited').value  = a.deposited || '';
-  el('a-margin').value     = a.cash !== undefined ? a.cash : (a.marginDebt ? -a.marginDebt : '');
+  el('a-margin').value     = accountCashBalance(id) || '';
   el('a-notes').value      = a.notes || '';
   el('a-editing-id').value = id;
   document.getElementById('account-form-title').textContent = 'Edit Account';
@@ -1548,12 +1650,22 @@ function recordSale() {
   if (!date) { toast('Enter a sale date.', 'error'); return; }
 
   const pl = s.costBasis ? (price - s.costBasis) * shares : 0;
+  const proceeds = shares * price;
 
   S.trades.push({
     id: uid(), type: 'stock', name: s.ticker,
     shares, salePrice: price, costBasis: s.costBasis || null,
     pl, date, notes, closedAt: new Date().toISOString()
   });
+
+  // Auto-post sale proceeds to account ledger
+  if (s.accountId) {
+    addLedgerEntry(s.accountId, {
+      date, type: 'stock_sale',
+      description: `Sold ${shares} ${s.ticker} @ ${fmt(price)}`,
+      amount: proceeds, auto: true,
+    });
+  }
 
   if (shares >= s.shares) {
     S.stocks = S.stocks.filter(x => x.id !== id);
@@ -1564,7 +1676,7 @@ function recordSale() {
 
   save(); renderAll();
   hideForm('sell-stock-form');
-  toast(`Sale recorded — ${fmt(pl)} P/L`, pl >= 0 ? 'success' : 'info');
+  toast(`Sale recorded — ${fmt(pl)} P/L${s.accountId ? ' · cash updated' : ''}`, pl >= 0 ? 'success' : 'info');
 }
 
 // ============================================================
@@ -1642,12 +1754,33 @@ function recordOptionClose() {
     closedAt: new Date().toISOString()
   });
 
+  // Auto-post cash impact to account ledger
+  if (o.accountId) {
+    const optName = `${o.underlying} $${o.strike}${o.optionType[0].toUpperCase()} ${expLabel}`;
+    if (isShort && outcome !== 'expired') {
+      // Bought back short — cash out (buyback cost)
+      addLedgerEntry(o.accountId, {
+        date, type: 'option_close',
+        description: `Bought back ${contracts}x ${optName}`,
+        amount: -(closePrice * contracts * 100), auto: true,
+      });
+    } else if (!isShort && outcome !== 'expired') {
+      // Sold long to close — cash in
+      addLedgerEntry(o.accountId, {
+        date, type: 'option_close',
+        description: `Sold to close ${contracts}x ${optName}`,
+        amount: closePrice * contracts * 100, auto: true,
+      });
+    }
+    // Expired (both long and short): no new cash entry — premium was already posted when opened
+  }
+
   S.options = S.options.filter(x => x.id !== id);
   delete S.optionPrices[id];
 
   save(); renderAll();
   hideForm('close-option-form');
-  toast(`Option closed — ${fmt(pl)} P/L`, pl >= 0 ? 'success' : 'info');
+  toast(`Option closed — ${fmt(pl)} P/L${o.accountId && outcome !== 'expired' ? ' · cash updated' : ''}`, pl >= 0 ? 'success' : 'info');
 }
 
 // ============================================================
@@ -2059,16 +2192,38 @@ function init() {
 
     const record = { underlying, position, optionType, strike, expiration, contracts, premium, accountId, broker, notes };
 
+    const premiumTotal = premium * contracts * 100;
+    const optLabel = `${underlying} $${strike}${optionType[0].toUpperCase()} exp ${expiration}`;
+
     if (editId) {
       const i = S.options.findIndex(o => o.id === editId);
       if (i !== -1) S.options[i] = { ...S.options[i], ...record };
     } else {
-      S.options.push({ id: uid(), ...record });
+      const newOpt = { id: uid(), ...record };
+      S.options.push(newOpt);
+      // Auto-post premium cash flow when opening a new position
+      if (accountId) {
+        if (position === 'short') {
+          addLedgerEntry(accountId, {
+            date: new Date().toISOString().slice(0, 10),
+            type: 'option_premium',
+            description: `Premium received: ${contracts}x ${optLabel}`,
+            amount: premiumTotal, auto: true,
+          });
+        } else {
+          addLedgerEntry(accountId, {
+            date: new Date().toISOString().slice(0, 10),
+            type: 'option_premium',
+            description: `Premium paid: ${contracts}x ${optLabel}`,
+            amount: -premiumTotal, auto: true,
+          });
+        }
+      }
     }
 
     save(); renderAll();
     hideForm('option-form'); clearOptionForm();
-    toast(editId ? 'Option updated!' : 'Option added!', 'success');
+    toast(editId ? 'Option updated!' : `Option added!${accountId ? ' · cash updated' : ''}`, 'success');
   });
 
   // ---- ACCOUNTS ----
@@ -2089,20 +2244,26 @@ function init() {
     const broker    = el('a-broker').value;
     const label     = el('a-label').value.trim();
     const deposited = parseFloat(el('a-deposited').value) || null;
-    const cash      = parseFloat(el('a-margin').value) || 0;
+    const openingCash = parseFloat(el('a-margin').value) || 0;
     const notes     = el('a-notes').value.trim();
     const editId    = el('a-editing-id').value;
 
-    const record = {
-      broker, label, deposited, cash, notes,
-      updatedAt: new Date().toISOString()
-    };
-
     if (editId) {
+      // On edit: update metadata only — cash is managed by the ledger
       const i = S.accounts.findIndex(a => a.id === editId);
-      if (i !== -1) S.accounts[i] = { ...S.accounts[i], ...record };
+      if (i !== -1) S.accounts[i] = { ...S.accounts[i], broker, label, deposited, notes, updatedAt: new Date().toISOString() };
     } else {
-      S.accounts.push({ id: uid(), ...record });
+      // New account: create it, then post opening balance entry if non-zero
+      const newAcct = { id: uid(), broker, label, deposited, notes, updatedAt: new Date().toISOString() };
+      S.accounts.push(newAcct);
+      if (openingCash !== 0) {
+        addLedgerEntry(newAcct.id, {
+          date: new Date().toISOString().slice(0, 10),
+          type: 'opening_balance',
+          description: 'Opening balance',
+          amount: openingCash, auto: false,
+        });
+      }
     }
 
     save(); renderAll();

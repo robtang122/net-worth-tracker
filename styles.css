@@ -686,6 +686,66 @@ main {
 [data-theme="light"] .badge-txn-dist { background: #ede9fe; color: #6d28d9; border: none; }
 
 /* ============================================================
+   LEDGER PANEL
+   ============================================================ */
+
+.ledger-panel {
+  border-top: 1px solid var(--border);
+  padding: 12px 16px 14px;
+  background: var(--surface2);
+  border-radius: 0 0 10px 10px;
+  margin-top: 10px;
+}
+
+.ledger-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.ledger-entry {
+  display: grid;
+  grid-template-columns: 90px auto 1fr 90px 90px 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.ledger-date { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.ledger-desc { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-amount { font-weight: 600; text-align: right; white-space: nowrap; }
+.ledger-balance { color: var(--muted); font-size: 12px; text-align: right; white-space: nowrap; }
+.ledger-empty { color: var(--muted); font-size: 13px; padding: 8px 0; text-align: center; }
+
+.ledger-add-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.ledger-add-form input { font-size: 13px; padding: 5px 8px; }
+
+.badge-ledger-opening  { background: #1e3a5f; color: #93c5fd; border: 1px solid #1e40af40; }
+.badge-ledger-stock    { background: #14532d20; color: #4ade80; border: 1px solid #15803d40; }
+.badge-ledger-premium  { background: #4c1d9520; color: #a78bfa; border: 1px solid #6d28d940; }
+.badge-ledger-close    { background: #7c2d1220; color: #fb923c; border: 1px solid #c2410c40; }
+.badge-ledger-manual   { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+
+[data-theme="light"] .badge-ledger-opening  { background: #dbeafe; color: #1d4ed8; border: none; }
+[data-theme="light"] .badge-ledger-stock    { background: #dcfce7; color: #16a34a; border: none; }
+[data-theme="light"] .badge-ledger-premium  { background: #ede9fe; color: #6d28d9; border: none; }
+[data-theme="light"] .badge-ledger-close    { background: #ffedd5; color: #c2410c; border: none; }
+[data-theme="light"] .badge-ledger-manual   { background: #f1f5f9; color: #64748b; border: none; }
+
+/* ============================================================
    HISTORY
    ============================================================ */
 .stats-grid {
