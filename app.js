@@ -37,6 +37,12 @@ let S = {
   optionPriceFetched: {}, // keyed by option id → ISO timestamp of last fetch
   ledger:       {},       // { [accountId]: [{id, date, type, description, amount, auto}] }
   filters:      { broker: 'all', type: 'all' },
+  sort: {
+    stocks:   { col: 'value',      dir: 'desc' },
+    crypto:   { col: 'value',      dir: 'desc' },
+    options:  { col: 'expiration', dir: 'asc'  },
+    realized: { col: 'date',       dir: 'desc' },
+  },
 };
 
 let charts = {};
@@ -618,6 +624,41 @@ function renderDashboard() {
 }
 
 // ============================================================
+// ============================================================
+// SORT HELPERS
+// ============================================================
+function sortTable(table, col) {
+  const s = S.sort[table];
+  if (s.col === col) {
+    s.dir = s.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    s.col = col;
+    // Sensible defaults: text/dates asc, numeric desc
+    s.dir = ['ticker', 'name', 'underlying', 'expiration', 'date'].includes(col) ? 'asc' : 'desc';
+  }
+  if (table === 'stocks')   renderStocks();
+  if (table === 'crypto')   renderCrypto();
+  if (table === 'options')  renderOptions();
+  if (table === 'realized') renderRealized();
+}
+
+function sortTh(table, col, label, extraClass = '') {
+  const s = S.sort[table];
+  const active = s.col === col;
+  const icon = active ? (s.dir === 'asc' ? '▲' : '▼') : '⇅';
+  return `<th class="sortable${active ? ' sort-active' : ''}${extraClass ? ' ' + extraClass : ''}" onclick="sortTable('${table}','${col}')">${label} <span class="sort-icon">${icon}</span></th>`;
+}
+
+function applySortRows(rows, col, dir, valFn) {
+  return [...rows].sort((a, b) => {
+    const va = valFn(a, col);
+    const vb = valFn(b, col);
+    if (va === vb) return 0;
+    const cmp = va < vb ? -1 : 1;
+    return dir === 'asc' ? cmp : -cmp;
+  });
+}
+
 // RENDER — ACCOUNTS
 // ============================================================
 function renderAccounts() {
@@ -775,20 +816,49 @@ function renderAccountFilterPills() {
 function renderStocks() {
   renderAccountFilterPills();
   const tbody = document.getElementById('stocks-tbody');
-  let rows    = S.stocks;
+  const thead = document.getElementById('stocks-thead');
+
+  // Dynamic header with sort
+  thead.innerHTML = `<tr>
+    ${sortTh('stocks','ticker','Ticker')}
+    ${sortTh('stocks','shares','Shares')}
+    ${sortTh('stocks','price','Price')}
+    ${sortTh('stocks','value','Value')}
+    <th>Account</th>
+    <th>Type</th>
+    ${sortTh('stocks','costBasis','Cost Basis')}
+    ${sortTh('stocks','pl','P/L')}
+    <th></th>
+  </tr>`;
+
+  let rows = S.stocks;
   if (S.filters.broker !== 'all') {
     rows = rows.filter(s => {
       if (s.accountId) return s.accountId === S.filters.broker;
-      // Backward compat: match by broker name if account id equals broker name
       const acct = S.accounts.find(a => a.id === S.filters.broker);
       return acct ? s.broker === acct.broker : false;
     });
   }
-  if (S.filters.type   !== 'all') {
+  if (S.filters.type !== 'all') {
     const oldMap = { 'long-hold': ['hold','long-term'], 'short-trade': ['trade','short-term'] };
     const aliases = oldMap[S.filters.type] || [];
     rows = rows.filter(s => s.type === S.filters.type || aliases.includes(s.type));
   }
+
+  // Apply sort
+  const { col, dir } = S.sort.stocks;
+  rows = applySortRows(rows, col, dir, (s, c) => {
+    const price = S.prices[s.ticker];
+    switch (c) {
+      case 'ticker':    return s.ticker.toLowerCase();
+      case 'shares':    return s.shares;
+      case 'price':     return price ?? -Infinity;
+      case 'value':     return (price ?? 0) * s.shares;
+      case 'costBasis': return s.costBasis ?? -Infinity;
+      case 'pl':        return (price != null && s.costBasis) ? (price - s.costBasis) * s.shares : -Infinity;
+      default:          return 0;
+    }
+  });
 
   if (!rows.length) {
     tbody.innerHTML = `<tr class="empty"><td colspan="9">${
@@ -850,9 +920,26 @@ function renderStocks() {
 // RENDER — OPTIONS
 // ============================================================
 function renderOptions() {
-  const tbody = document.getElementById('options-tbody');
-  const today = new Date();
+  const tbody  = document.getElementById('options-tbody');
+  const thead  = document.getElementById('options-thead');
+  const today  = new Date();
   today.setHours(0, 0, 0, 0);
+
+  thead.innerHTML = `<tr>
+    ${sortTh('options','underlying','Underlying')}
+    <th>Pos</th>
+    <th>Type</th>
+    ${sortTh('options','strike','Strike')}
+    ${sortTh('options','expiration','Expiration')}
+    ${sortTh('options','dte','DTE')}
+    ${sortTh('options','contracts','Contracts')}
+    ${sortTh('options','premium','Premium')}
+    <th>Current Price</th>
+    ${sortTh('options','value','Value')}
+    ${sortTh('options','pl','P/L')}
+    <th>Account</th>
+    <th></th>
+  </tr>`;
 
   if (!S.options.length) {
     tbody.innerHTML = `<tr class="empty"><td colspan="13">No options yet — add one above.</td></tr>`;
@@ -860,8 +947,32 @@ function renderOptions() {
     return;
   }
 
+  const { col: oCol, dir: oDir } = S.sort.options;
+  const sortedOptions = applySortRows(S.options, oCol, oDir, (o, c) => {
+    const price     = S.optionPrices[o.id];
+    const contracts = o.contracts || 1;
+    const premium   = o.premium || 0;
+    const isShort   = o.position === 'short';
+    const val       = price != null ? price * contracts * 100 : null;
+    const expDate   = new Date(o.expiration + 'T00:00:00');
+    const dte       = Math.ceil((expDate - today) / 86400000);
+    const premiumTotal = premium * contracts * 100;
+    const pl = val != null ? (isShort ? premiumTotal - val : val - premiumTotal) : null;
+    switch (c) {
+      case 'underlying':  return o.underlying.toLowerCase();
+      case 'strike':      return o.strike;
+      case 'expiration':  return o.expiration;
+      case 'dte':         return dte;
+      case 'contracts':   return contracts;
+      case 'premium':     return premium;
+      case 'value':       return val ?? -Infinity;
+      case 'pl':          return pl ?? -Infinity;
+      default:            return 0;
+    }
+  });
+
   let total = 0;
-  tbody.innerHTML = S.options.map(o => {
+  tbody.innerHTML = sortedOptions.map(o => {
     const price     = S.optionPrices[o.id];
     const contracts = o.contracts || 1;
     const premium   = o.premium || 0;
@@ -941,6 +1052,17 @@ function renderOptions() {
 // ============================================================
 function renderCrypto() {
   const tbody = document.getElementById('crypto-tbody');
+  const thead = document.getElementById('crypto-thead');
+  if (thead) thead.innerHTML = `<tr>
+    ${sortTh('crypto','name','Coin')}
+    ${sortTh('crypto','amount','Amount')}
+    ${sortTh('crypto','price','Price')}
+    ${sortTh('crypto','value','Value')}
+    ${sortTh('crypto','costBasis','Cost Basis')}
+    ${sortTh('crypto','pl','P/L')}
+    <th></th>
+    <th></th>
+  </tr>`;
 
   // --- Capital card ---
   const totalVal  = cryptoTotal();
@@ -966,8 +1088,24 @@ function renderCrypto() {
     return;
   }
 
+  const { col: cCol, dir: cDir } = S.sort.crypto;
+  const sortedCrypto = applySortRows(S.crypto, cCol, cDir, (c, col) => {
+    const price = S.cryptoPrices[c.coinId];
+    const val   = price != null ? price * c.amount : null;
+    const pl    = (price != null && c.costBasis) ? (price - c.costBasis) * c.amount : null;
+    switch (col) {
+      case 'name':      return c.name.toLowerCase();
+      case 'amount':    return c.amount;
+      case 'price':     return price ?? -Infinity;
+      case 'value':     return val ?? -Infinity;
+      case 'costBasis': return c.costBasis ?? -Infinity;
+      case 'pl':        return pl ?? -Infinity;
+      default:          return 0;
+    }
+  });
+
   let total = 0;
-  tbody.innerHTML = S.crypto.map(c => {
+  tbody.innerHTML = sortedCrypto.map(c => {
     const price = S.cryptoPrices[c.coinId];
     const val   = price != null ? price * c.amount : null;
     if (val) total += val;
@@ -1407,13 +1545,36 @@ function renderRealized() {
   set('real-losses', `<span class="neg">${fmt(losses)}</span>`);
   set('real-count',  S.trades.length);
 
-  const tbody = document.getElementById('trades-tbody');
+  const tbody  = document.getElementById('trades-tbody');
+  const thead  = document.getElementById('realized-thead');
+  if (thead) thead.innerHTML = `<tr>
+    ${sortTh('realized','date','Date')}
+    ${sortTh('realized','name','Asset')}
+    <th>Type</th>
+    <th>Qty</th>
+    ${sortTh('realized','costBasis','Cost Basis')}
+    ${sortTh('realized','salePrice','Sale Price')}
+    ${sortTh('realized','pl','P/L')}
+    <th>Notes</th>
+    <th></th>
+  </tr>`;
+
   if (!S.trades.length) {
-    tbody.innerHTML = `<tr class="empty"><td colspan="10">No realized trades yet — use the $ button on any holding to record a sale.</td></tr>`;
+    tbody.innerHTML = `<tr class="empty"><td colspan="9">No realized trades yet — use the $ button on any holding to record a sale.</td></tr>`;
     return;
   }
 
-  const sorted = [...S.trades].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const { col: rCol, dir: rDir } = S.sort.realized;
+  const sorted = applySortRows(S.trades, rCol, rDir, (t, col) => {
+    switch (col) {
+      case 'date':      return t.date;
+      case 'name':      return t.name.toLowerCase();
+      case 'costBasis': return t.costBasis ?? -Infinity;
+      case 'salePrice': return t.salePrice ?? -Infinity;
+      case 'pl':        return t.pl ?? -Infinity;
+      default:          return 0;
+    }
+  });
   tbody.innerHTML = sorted.map(t => {
     const typeBadge = t.type === 'stock' ? 'badge-hold' : t.type === 'option' ? 'badge-call' : 'badge-other';
     const typeLabel = t.type === 'stock' ? 'Stock' : t.type === 'option' ? 'Option' : 'Crypto';
@@ -1428,7 +1589,6 @@ function renderRealized() {
       <td>${t.costBasis  != null ? fmtP(t.costBasis)  : '—'}</td>
       <td>${t.salePrice != null ? fmtP(t.salePrice) : '—'}</td>
       <td><span class="${t.pl >= 0 ? 'pos' : 'neg'}">${fmt(t.pl)}</span></td>
-      <td>—</td>
       <td>${t.notes ? `<span style="color:var(--muted);font-size:12px">${t.notes}</span>` : ''}</td>
       <td><button class="icon-btn" onclick="delTrade('${t.id}')" title="Delete">✕</button></td>
     </tr>`;

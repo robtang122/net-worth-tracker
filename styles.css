@@ -538,6 +538,15 @@ main {
   background: var(--surface);
 }
 
+.tbl th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.tbl th.sortable:hover { color: var(--text); }
+.tbl th.sort-active { color: var(--accent); }
+.sort-icon { font-size: 9px; opacity: 0.5; margin-left: 3px; }
+.sort-active .sort-icon { opacity: 1; }
+
 .tbl td {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
