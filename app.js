@@ -972,7 +972,7 @@ function perfFilteredTxns() {
 
 function renderPerformance() {
   // Year pills
-  const years = [...new Set(S.importedTxns.map(t => t.date?.slice(0,4)).filter(Boolean))].sort();
+  const years = [...new Set(S.importedTxns.map(t => t.date?.slice(0, 4)).filter(Boolean))].sort();
   const pillsEl = document.getElementById('perf-year-pills');
   if (pillsEl) {
     pillsEl.innerHTML = `<span class="filter-label">Year:</span>
@@ -980,134 +980,152 @@ function renderPerformance() {
       ${years.map(y => `<button class="pill${S.perfYear === y ? ' active' : ''}" onclick="setPerfYear('${y}')">${y}</button>`).join('')}`;
   }
 
-  if (!S.importedTxns.length) {
-    document.getElementById('perf-stats').innerHTML = `<p style="text-align:center;color:var(--muted);padding:36px">No imported transactions yet — upload your Cowork JSON in Settings.</p>`;
-    document.getElementById('perf-breakdown').innerHTML = '';
-    document.getElementById('perf-deposits').innerHTML = '';
-    return;
-  }
+  // Portfolio totals
+  const stockVal  = stocksTotal();
+  const cryptoVal = cryptoTotal();
+  const privVal   = privateTotal();
+  const cashVal   = totalCashBalance();
+  const totalVal  = stockVal + cryptoVal + privVal + cashVal;
 
-  const txns = perfFilteredTxns();
+  // Unrealized gain on stocks (cost basis from position engine)
+  const stockCost      = S.stocks.reduce((s, st) => s + (st.costBasis ? st.costBasis * st.shares : 0), 0);
+  const unrealizedGain = stockCost > 0 ? stockVal - stockCost : null;
+  const unrealizedPct  = stockCost > 0 ? ((stockVal - stockCost) / stockCost) * 100 : null;
 
-  // Compute categories
-  const wheelTypes = new Set(['option_sell','option_close','option_expire','option_assign']);
-  const grossPremium   = txns.filter(t => t.type === 'option_sell').reduce((s,t) => s + (t.amount||0), 0);
-  const btcCosts       = txns.filter(t => t.type === 'option_close').reduce((s,t) => s + (t.amount||0), 0); // negative
-  const netPremium     = grossPremium + btcCosts;
-  const dividends      = txns.filter(t => t.type === 'dividend').reduce((s,t) => s + (t.amount||0), 0);
-  const interest       = txns.filter(t => t.type === 'interest').reduce((s,t) => s + (t.amount||0), 0);
-  const fees           = txns.filter(t => t.type === 'fee').reduce((s,t) => s + (t.amount||0), 0);
-  const deposits       = txns.filter(t => t.type === 'deposit').reduce((s,t) => s + (t.amount||0), 0);
-  const withdrawals    = txns.filter(t => t.type === 'withdrawal').reduce((s,t) => s + (t.amount||0), 0);
-  const netDeposited   = deposits + withdrawals; // withdrawals are negative
+  // Net deposited — all time (not year-filtered, always a total picture)
+  const allDeposits    = S.importedTxns.filter(t => t.type === 'deposit').reduce((s, t) => s + (t.amount || 0), 0);
+  const allWithdrawals = S.importedTxns.filter(t => t.type === 'withdrawal').reduce((s, t) => s + (t.amount || 0), 0);
+  const netDeposited   = allDeposits + allWithdrawals;
 
   // Stats row
   document.getElementById('perf-stats').innerHTML = `
     <div class="dash-cat">
-      <div class="dash-cat-label">Net Options Premium</div>
-      <div class="dash-cat-value ${netPremium >= 0 ? 'pos' : 'neg'}">${fmt(netPremium)}</div>
+      <div class="dash-cat-label">Total Portfolio</div>
+      <div class="dash-cat-value">${fmt(totalVal)}</div>
     </div>
     <div class="dash-cat">
-      <div class="dash-cat-label">Dividends</div>
-      <div class="dash-cat-value pos">${fmt(dividends)}</div>
+      <div class="dash-cat-label">Stock Holdings</div>
+      <div class="dash-cat-value">${fmt(stockVal)}</div>
     </div>
     <div class="dash-cat">
-      <div class="dash-cat-label">Interest</div>
-      <div class="dash-cat-value">${fmt(interest)}</div>
+      <div class="dash-cat-label">Stock Cost Basis</div>
+      <div class="dash-cat-value">${stockCost > 0 ? fmt(stockCost) : '—'}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Unrealized Gain</div>
+      <div class="dash-cat-value ${unrealizedGain != null ? (unrealizedGain >= 0 ? 'pos' : 'neg') : ''}">
+        ${unrealizedGain != null
+          ? `${fmt(unrealizedGain)} <small style="font-size:13px">(${fmtPct(unrealizedPct)})</small>`
+          : '—'}
+      </div>
     </div>
     <div class="dash-cat">
       <div class="dash-cat-label">Net Deposited</div>
       <div class="dash-cat-value">${fmt(netDeposited)}</div>
-    </div>
-    <div class="dash-cat">
-      <div class="dash-cat-label">Fees Paid</div>
-      <div class="dash-cat-value neg">${fmt(fees)}</div>
     </div>`;
 
-  // Breakdown card
-  const rows = [
-    { label: 'Gross Option Premium', amount: grossPremium, cls: 'pos' },
-    { label: 'Buy-to-Close Costs', amount: btcCosts, cls: 'neg' },
-    { label: 'Net Option Premium', amount: netPremium, cls: netPremium >= 0 ? 'pos' : 'neg', bold: true },
-    { label: 'Dividends', amount: dividends, cls: 'pos' },
-    { label: 'Interest Income', amount: interest, cls: 'pos' },
-    { label: 'Fees & Commissions', amount: fees, cls: 'neg' },
-  ];
+  // Holdings by account
+  const acctRows = S.accounts.map(a => {
+    const acctStocks = S.stocks.filter(s => s.accountId === a.id);
+    const val  = acctStocks.reduce((s, st) => s + ((S.prices[st.ticker] || 0) * st.shares), 0);
+    const cost = acctStocks.reduce((s, st) => s + (st.costBasis ? st.costBasis * st.shares : 0), 0);
+    const cash = accountCashBalance(a.id);
+    return { acct: a, val, cost, cash, total: val + cash };
+  }).filter(r => r.total !== 0 || r.val !== 0);
 
-  document.getElementById('perf-breakdown').innerHTML = `
+  document.getElementById('perf-breakdown').innerHTML = acctRows.length ? `
     <div class="card" style="margin-bottom:16px">
-      <h3>Income Breakdown</h3>
-      <table class="tbl">
-        <thead><tr><th>Category</th><th>Amount</th><th>Transactions</th></tr></thead>
+      <h3>Holdings by Account</h3>
+      <div class="table-wrap"><table class="tbl">
+        <thead><tr><th>Account</th><th>Stocks</th><th>Cost Basis</th><th>Unrealized</th><th>Cash</th><th>Total</th></tr></thead>
         <tbody>
-          ${rows.map(r => `<tr>
-            <td>${r.bold ? `<strong>${r.label}</strong>` : r.label}</td>
-            <td><span class="${r.cls}">${fmt(r.amount)}</span></td>
-            <td style="color:var(--muted);font-size:12px">${r.bold ? '' : txns.filter(t => {
-              if (r.label.includes('Gross')) return t.type === 'option_sell';
-              if (r.label.includes('Buy-to-Close')) return t.type === 'option_close';
-              if (r.label.includes('Dividend')) return t.type === 'dividend';
-              if (r.label.includes('Interest')) return t.type === 'interest';
-              if (r.label.includes('Fees')) return t.type === 'fee';
-              return false;
-            }).length}</td>
-          </tr>`).join('')}
+          ${acctRows.map(r => {
+            const unreal = r.cost > 0 ? r.val - r.cost : null;
+            return `<tr>
+              <td><strong>${r.acct.label || r.acct.broker}</strong></td>
+              <td>${fmt(r.val)}</td>
+              <td>${r.cost > 0 ? fmt(r.cost) : '—'}</td>
+              <td>${unreal != null ? `<span class="${unreal >= 0 ? 'pos' : 'neg'}">${fmt(unreal)}</span>` : '—'}</td>
+              <td>${fmt(r.cash)}</td>
+              <td><strong>${fmt(r.total)}</strong></td>
+            </tr>`;
+          }).join('')}
         </tbody>
-      </table>
-      <p style="color:var(--muted);font-size:12px;margin-top:12px">Stock P&L not shown here — import your 1099-B through Cowork to unlock realized gain breakdown.</p>
-    </div>`;
+      </table></div>
+    </div>` : '';
 
-  // Deposits/withdrawals by account
-  const acctMap = {};
-  txns.filter(t => t.type === 'deposit' || t.type === 'withdrawal').forEach(t => {
-    const key = t.accountLabel || t.source || 'Unknown';
-    if (!acctMap[key]) acctMap[key] = { deposits: 0, withdrawals: 0 };
-    if (t.type === 'deposit') acctMap[key].deposits += t.amount || 0;
-    else acctMap[key].withdrawals += t.amount || 0;
-  });
+  // Income summary (year-filtered) — brief overview; detail lives in Wheel tab
+  const txns = perfFilteredTxns();
+  const optIncome  = txns.filter(t => ['option_sell','option_close'].includes(t.type)).reduce((s,t) => s + (t.amount||0), 0);
+  const divs       = txns.filter(t => t.type === 'dividend').reduce((s,t) => s + (t.amount||0), 0);
+  const intIncome  = txns.filter(t => t.type === 'interest').reduce((s,t) => s + (t.amount||0), 0);
+  const feesTotal  = txns.filter(t => t.type === 'fee').reduce((s,t) => s + (t.amount||0), 0);
+  const totalIncome = optIncome + divs + intIncome + feesTotal;
+  const periodLabel = S.perfYear !== 'all' ? S.perfYear : 'All Time';
 
-  const acctRows = Object.entries(acctMap);
-  document.getElementById('perf-deposits').innerHTML = acctRows.length ? `
+  document.getElementById('perf-deposits').innerHTML = S.importedTxns.length ? `
     <div class="card">
-      <h3>Deposits & Withdrawals by Account</h3>
-      <table class="tbl">
-        <thead><tr><th>Account</th><th>Deposits</th><th>Withdrawals</th><th>Net</th></tr></thead>
+      <h3>Income Summary — ${periodLabel}</h3>
+      <div class="table-wrap"><table class="tbl">
+        <thead><tr><th>Category</th><th>Amount</th></tr></thead>
         <tbody>
-          ${acctRows.map(([acct, v]) => `<tr>
-            <td>${acct}</td>
-            <td class="pos">${fmt(v.deposits)}</td>
-            <td class="neg">${fmt(v.withdrawals)}</td>
-            <td class="${(v.deposits + v.withdrawals) >= 0 ? 'pos' : 'neg'}">${fmt(v.deposits + v.withdrawals)}</td>
-          </tr>`).join('')}
+          <tr><td>Net Options Premium</td><td><span class="${optIncome >= 0 ? 'pos' : 'neg'}">${fmt(optIncome)}</span></td></tr>
+          <tr><td>Dividends</td><td><span class="pos">${fmt(divs)}</span></td></tr>
+          <tr><td>Interest</td><td>${fmt(intIncome)}</td></tr>
+          <tr><td>Fees</td><td><span class="neg">${fmt(feesTotal)}</span></td></tr>
           <tr style="border-top:2px solid var(--border)">
             <td><strong>Total</strong></td>
-            <td class="pos"><strong>${fmt(deposits)}</strong></td>
-            <td class="neg"><strong>${fmt(withdrawals)}</strong></td>
-            <td class="${netDeposited >= 0 ? 'pos' : 'neg'}"><strong>${fmt(netDeposited)}</strong></td>
+            <td><strong><span class="${totalIncome >= 0 ? 'pos' : 'neg'}">${fmt(totalIncome)}</span></strong></td>
           </tr>
         </tbody>
-      </table>
+      </table></div>
+      <p style="color:var(--muted);font-size:12px;margin-top:12px">
+        Detailed options analytics → <a href="#" onclick="switchTab('wheel');return false" style="color:var(--accent)">Wheel Strategy tab</a> ·
+        Stock realized P&L requires 1099-B import
+      </p>
     </div>` : '';
 }
 
 function setPerfYear(year) {
   S.perfYear = year;
   renderPerformance();
+  renderRealized();
+  renderWheel();
 }
 
 // ============================================================
 // RENDER — WHEEL STRATEGY TAB
 // ============================================================
 function renderWheel() {
+  // Year pills (shared state)
+  const years = [...new Set(S.importedTxns.map(t => t.date?.slice(0, 4)).filter(Boolean))].sort();
+  const wheelHeader = document.querySelector('#tab-wheel .section-header');
+  if (wheelHeader && !document.getElementById('wheel-year-pills')) {
+    const pillsDiv = document.createElement('div');
+    pillsDiv.id        = 'wheel-year-pills';
+    pillsDiv.className = 'filter-group';
+    wheelHeader.appendChild(pillsDiv);
+  }
+  const wheelPills = document.getElementById('wheel-year-pills');
+  if (wheelPills) {
+    wheelPills.innerHTML = `<span class="filter-label">Year:</span>
+      <button class="pill${S.perfYear === 'all' ? ' active' : ''}" onclick="setPerfYear('all')">All</button>
+      ${years.map(y => `<button class="pill${S.perfYear === y ? ' active' : ''}" onclick="setPerfYear('${y}')">${y}</button>`).join('')}`;
+  }
+
   if (!S.importedTxns.length && !S.options.length) {
-    document.getElementById('wheel-stats').innerHTML = `<p style="text-align:center;color:var(--muted);padding:36px">No data yet — import your Cowork JSON in Settings, or add options in the Options tab.</p>`;
+    document.getElementById('wheel-stats').innerHTML = `<p style="text-align:center;color:var(--muted);padding:36px">No data yet — import your Cowork JSON in Settings.</p>`;
     ['wheel-by-underlying','wheel-monthly','wheel-open'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
     return;
   }
 
-  const wheelTxns = S.importedTxns.filter(t =>
+  // Filter by selected year
+  const allWheelTxns = S.importedTxns.filter(t =>
     t.strategy === 'wheel' || ['option_sell','option_close','option_expire','option_assign'].includes(t.type)
   );
+  const wheelTxns = S.perfYear === 'all'
+    ? allWheelTxns
+    : allWheelTxns.filter(t => t.date?.startsWith(S.perfYear));
 
   const grossPremium = wheelTxns.filter(t => t.type === 'option_sell').reduce((s,t) => s + (t.amount||0), 0);
   const btcCosts     = wheelTxns.filter(t => t.type === 'option_close').reduce((s,t) => s + (t.amount||0), 0);
@@ -1463,11 +1481,7 @@ function renderStocks() {
         ? `<span class="${pl >= 0 ? 'pos' : 'neg'}">${fmt(pl)} <small>(${fmtPct(plPct)})</small></span>`
         : '—'
       }</td>
-      <td>
-        <button class="icon-btn" onclick="openSellStock('${s.id}')" title="Sell">$</button>
-        <button class="icon-btn" onclick="editStock('${s.id}')" title="Edit">✏</button>
-        <button class="icon-btn" onclick="delStock('${s.id}')"  title="Delete">✕</button>
-      </td>
+      <td></td>
     </tr>`;
   }).join('');
 
@@ -1594,11 +1608,7 @@ function renderOptions() {
           : '—'
       }</td>
       <td><span class="badge ${brokerBadge}">${oLabel}</span></td>
-      <td>
-        <button class="icon-btn" onclick="openCloseOption('${o.id}')" title="Close">$</button>
-        <button class="icon-btn" onclick="editOption('${o.id}')" title="Edit">✏</button>
-        <button class="icon-btn" onclick="delOption('${o.id}')"  title="Delete">✕</button>
-      </td>
+      <td></td>
     </tr>`;
   }).join('');
 
@@ -2090,67 +2100,107 @@ function drawHistoryChart(canvasId, height) {
 // RENDER — REALIZED GAINS
 // ============================================================
 function renderRealized() {
-  const netPL   = realizedNetPL();
-  const gains   = realizedGains();
-  const losses  = realizedLosses();
-
-  const netEl = document.getElementById('real-net-pl');
-  if (netEl) {
-    netEl.textContent = fmt(netPL);
-    netEl.className   = 'stat-value ' + (netPL >= 0 ? 'pos' : 'neg');
+  // Year pills (shared state with Performance and Wheel)
+  const years = [...new Set(S.importedTxns.map(t => t.date?.slice(0, 4)).filter(Boolean))].sort();
+  const pillsEl = document.getElementById('realized-year-pills');
+  if (pillsEl) {
+    pillsEl.innerHTML = `<span class="filter-label">Year:</span>
+      <button class="pill${S.perfYear === 'all' ? ' active' : ''}" onclick="setPerfYear('all')">All</button>
+      ${years.map(y => `<button class="pill${S.perfYear === y ? ' active' : ''}" onclick="setPerfYear('${y}')">${y}</button>`).join('')}`;
   }
-  set('real-gains',  `<span class="pos">${fmt(gains)}</span>`);
-  set('real-losses', `<span class="neg">${fmt(losses)}</span>`);
-  set('real-count',  S.trades.length);
 
-  const tbody  = document.getElementById('trades-tbody');
-  const thead  = document.getElementById('realized-thead');
-  if (thead) thead.innerHTML = `<tr>
-    ${sortTh('realized','date','Date')}
-    ${sortTh('realized','name','Asset')}
-    <th>Type</th>
-    <th>Qty</th>
-    ${sortTh('realized','costBasis','Cost Basis')}
-    ${sortTh('realized','salePrice','Sale Price')}
-    ${sortTh('realized','pl','P/L')}
-    <th>Notes</th>
-    <th></th>
-  </tr>`;
+  const statsEl = document.getElementById('realized-stats');
+  const tableEl = document.getElementById('realized-table');
 
-  if (!S.trades.length) {
-    tbody.innerHTML = `<tr class="empty"><td colspan="9">No realized trades yet — use the $ button on any holding to record a sale.</td></tr>`;
+  if (!S.importedTxns.length) {
+    if (statsEl) statsEl.innerHTML = `<p style="text-align:center;color:var(--muted);padding:36px 0">No imported transactions yet — upload your Cowork JSON in Settings.</p>`;
+    if (tableEl) tableEl.innerHTML = '';
     return;
   }
 
-  const { col: rCol, dir: rDir } = S.sort.realized;
-  const sorted = applySortRows(S.trades, rCol, rDir, (t, col) => {
-    switch (col) {
-      case 'date':      return t.date;
-      case 'name':      return t.name.toLowerCase();
-      case 'costBasis': return t.costBasis ?? -Infinity;
-      case 'salePrice': return t.salePrice ?? -Infinity;
-      case 'pl':        return t.pl ?? -Infinity;
-      default:          return 0;
-    }
-  });
-  tbody.innerHTML = sorted.map(t => {
-    const typeBadge = t.type === 'stock' ? 'badge-hold' : t.type === 'option' ? 'badge-call' : 'badge-other';
-    const typeLabel = t.type === 'stock' ? 'Stock' : t.type === 'option' ? 'Option' : 'Crypto';
-    const qty = t.type === 'stock'  ? `${t.shares} sh`
-              : t.type === 'option' ? `${t.contracts} ct`
-              : `${t.amount}`;
-    return `<tr>
-      <td>${fmtDate(t.date)}</td>
-      <td><strong>${t.name}</strong></td>
-      <td><span class="badge ${typeBadge}">${typeLabel}</span></td>
-      <td>${qty}</td>
-      <td>${t.costBasis  != null ? fmtP(t.costBasis)  : '—'}</td>
-      <td>${t.salePrice != null ? fmtP(t.salePrice) : '—'}</td>
-      <td><span class="${t.pl >= 0 ? 'pos' : 'neg'}">${fmt(t.pl)}</span></td>
-      <td>${t.notes ? `<span style="color:var(--muted);font-size:12px">${t.notes}</span>` : ''}</td>
-      <td><button class="icon-btn" onclick="delTrade('${t.id}')" title="Delete">✕</button></td>
-    </tr>`;
-  }).join('');
+  const txns = S.perfYear === 'all'
+    ? S.importedTxns
+    : S.importedTxns.filter(t => t.date?.startsWith(S.perfYear));
+
+  // Stats
+  const optionNetIncome = txns
+    .filter(t => ['option_sell', 'option_close'].includes(t.type))
+    .reduce((s, t) => s + (t.amount || 0), 0);
+  const stockProceeds = txns.filter(t => t.type === 'stock_sell').reduce((s, t) => s + (t.amount || 0), 0);
+  const dividends     = txns.filter(t => t.type === 'dividend').reduce((s, t) => s + (t.amount || 0), 0);
+  const interest      = txns.filter(t => t.type === 'interest').reduce((s, t) => s + (t.amount || 0), 0);
+  const fees          = txns.filter(t => t.type === 'fee').reduce((s, t) => s + (t.amount || 0), 0);
+
+  if (statsEl) statsEl.innerHTML = `
+    <div class="dash-cat">
+      <div class="dash-cat-label">Net Options Income</div>
+      <div class="dash-cat-value ${optionNetIncome >= 0 ? 'pos' : 'neg'}">${fmt(optionNetIncome)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Stock Proceeds</div>
+      <div class="dash-cat-value">${fmt(stockProceeds)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Dividends</div>
+      <div class="dash-cat-value pos">${fmt(dividends)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Interest</div>
+      <div class="dash-cat-value">${fmt(interest)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Fees</div>
+      <div class="dash-cat-value neg">${fmt(fees)}</div>
+    </div>`;
+
+  // Activity log — closed events + income events sorted newest first
+  const ACTIVITY_TYPES = new Set([
+    'stock_sell', 'option_close', 'option_expire', 'option_assign',
+    'dividend', 'interest', 'fee',
+  ]);
+  const activityTxns = txns
+    .filter(t => ACTIVITY_TYPES.has(t.type))
+    .sort((a, b) => (b.date || '') < (a.date || '') ? -1 : 1);
+
+  if (!activityTxns.length) {
+    if (tableEl) tableEl.innerHTML = `<div class="card"><p style="color:var(--muted);padding:24px;text-align:center">No activity for this period.</p></div>`;
+    return;
+  }
+
+  const typeInfo = {
+    stock_sell:    { label: 'Stock Sale',   cls: 'badge-hold' },
+    option_close:  { label: 'BTC',          cls: 'badge-call' },
+    option_expire: { label: 'Expired',      cls: 'badge-ledger-opening' },
+    option_assign: { label: 'Assigned',     cls: 'badge-other' },
+    dividend:      { label: 'Dividend',     cls: 'badge-ledger-premium' },
+    interest:      { label: 'Interest',     cls: 'badge-ledger-manual' },
+    fee:           { label: 'Fee',          cls: 'badge-ledger-close' },
+  };
+
+  if (tableEl) tableEl.innerHTML = `
+    <div class="card">
+      <h3>Activity Log</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Stock sale P&L requires cost basis — import your 1099-B through Cowork to unlock full gain/loss breakdown.</p>
+      <div class="table-wrap"><table class="tbl">
+        <thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Description</th><th style="text-align:right">Amount</th></tr></thead>
+        <tbody>
+          ${activityTxns.map(t => {
+            const info  = typeInfo[t.type] || { label: t.type, cls: 'badge-other' };
+            const asset = t.optionUnderlying || t.ticker || '—';
+            const amt   = t.amount != null
+              ? `<span class="${(t.amount || 0) >= 0 ? 'pos' : 'neg'}">${fmt(t.amount)}</span>`
+              : '—';
+            return `<tr>
+              <td>${fmtDate(t.date)}</td>
+              <td><span class="badge ${info.cls}">${info.label}</span></td>
+              <td><strong>${asset}</strong></td>
+              <td style="color:var(--muted);font-size:12px">${t.description || ''}</td>
+              <td style="text-align:right">${amt}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
 }
 
 // ============================================================
@@ -2720,66 +2770,7 @@ function init() {
     renderHistory();
   });
 
-  // ---- STOCKS ----
-  el('add-stock-toggle').addEventListener('click', () => {
-    const f = el('stock-form');
-    if (f.style.display === 'none' || !f.style.display) {
-      clearStockForm(); showForm('stock-form');
-    } else {
-      hideForm('stock-form');
-    }
-  });
-
-  el('cancel-stock-btn').addEventListener('click', () => {
-    hideForm('stock-form'); clearStockForm();
-  });
-
-  el('save-stock-btn').addEventListener('click', () => {
-    const ticker    = el('s-ticker').value.trim().toUpperCase();
-    const shares    = parseFloat(el('s-shares').value);
-    const accountId = el('s-account').value;
-    const type      = el('s-type').value;
-    const costBasis = parseFloat(el('s-cost').value) || null;
-    const notes     = el('s-notes').value.trim();
-    const editId    = el('s-editing-id').value;
-
-    if (!ticker || isNaN(shares) || shares <= 0) {
-      toast('Enter a valid ticker and share count.', 'error'); return;
-    }
-    if (!accountId) {
-      toast('Select an account.', 'error'); return;
-    }
-
-    const acct   = S.accounts.find(a => a.id === accountId);
-    const broker = acct ? acct.broker : 'Other';
-
-    if (editId) {
-      const i = S.stocks.findIndex(s => s.id === editId);
-      if (i !== -1) S.stocks[i] = { ...S.stocks[i], ticker, shares, accountId, broker, type, costBasis, notes };
-    } else {
-      S.stocks.push({ id: uid(), ticker, shares, accountId, broker, type, costBasis, notes });
-    }
-
-    save(); renderAll();
-    hideForm('stock-form'); clearStockForm();
-    toast(editId ? 'Stock updated!' : 'Stock added!', 'success');
-
-    if (!editId && S.settings.finnhubKey) {
-      fetchStockPrice(ticker).then(p => {
-        if (p !== null) { S.prices[ticker] = p; save(); renderAll(); }
-      });
-    }
-  });
-
-  // Stock type filters
-  document.querySelectorAll('[data-stype]').forEach(b =>
-    b.addEventListener('click', () => {
-      document.querySelectorAll('[data-stype]').forEach(x => x.classList.remove('active'));
-      b.classList.add('active');
-      S.filters.type = b.dataset.stype;
-      renderStocks();
-    })
-  );
+  // (Stock add/edit/sell forms removed — positions are import-derived)
 
   // ---- CRYPTO ----
   el('add-crypto-toggle').addEventListener('click', () => {
@@ -2872,77 +2863,7 @@ function init() {
     toast(editId ? 'Investment updated!' : 'Investment added!', 'success');
   });
 
-  // ---- OPTIONS ----
-  el('add-option-toggle').addEventListener('click', () => {
-    const f = el('option-form');
-    if (f.style.display === 'none' || !f.style.display) {
-      clearOptionForm(); populateOptionAccountSelect(); showForm('option-form');
-    } else {
-      hideForm('option-form');
-    }
-  });
-
-  el('cancel-option-btn').addEventListener('click', () => {
-    hideForm('option-form'); clearOptionForm();
-  });
-
-  el('save-option-btn').addEventListener('click', () => {
-    const underlying  = el('o-ticker').value.trim().toUpperCase();
-    const position    = el('o-position').value;
-    const optionType  = el('o-type').value;
-    const strike      = parseFloat(el('o-strike').value);
-    const expiration  = el('o-expiration').value;
-    const contracts   = parseInt(el('o-contracts').value) || 1;
-    const premium     = parseFloat(el('o-premium').value);
-    const accountId   = el('o-account').value;
-    const notes       = el('o-notes').value.trim();
-    const editId      = el('o-editing-id').value;
-
-    if (!underlying || isNaN(strike) || !expiration || isNaN(premium)) {
-      toast('Fill in all required fields.', 'error'); return;
-    }
-    if (!accountId) {
-      toast('Select an account.', 'error'); return;
-    }
-
-    const oAcct  = S.accounts.find(a => a.id === accountId);
-    const broker = oAcct ? oAcct.broker : 'Other';
-
-    const record = { underlying, position, optionType, strike, expiration, contracts, premium, accountId, broker, notes };
-
-    const premiumTotal = premium * contracts * 100;
-    const optLabel = `${underlying} $${strike}${optionType[0].toUpperCase()} exp ${expiration}`;
-
-    if (editId) {
-      const i = S.options.findIndex(o => o.id === editId);
-      if (i !== -1) S.options[i] = { ...S.options[i], ...record };
-    } else {
-      const newOpt = { id: uid(), ...record };
-      S.options.push(newOpt);
-      // Auto-post premium cash flow when opening a new position
-      if (accountId) {
-        if (position === 'short') {
-          addLedgerEntry(accountId, {
-            date: new Date().toISOString().slice(0, 10),
-            type: 'option_premium',
-            description: `Premium received: ${contracts}x ${optLabel}`,
-            amount: premiumTotal, auto: true,
-          });
-        } else {
-          addLedgerEntry(accountId, {
-            date: new Date().toISOString().slice(0, 10),
-            type: 'option_premium',
-            description: `Premium paid: ${contracts}x ${optLabel}`,
-            amount: -premiumTotal, auto: true,
-          });
-        }
-      }
-    }
-
-    save(); renderAll();
-    hideForm('option-form'); clearOptionForm();
-    toast(editId ? 'Option updated!' : `Option added!${accountId ? ' · cash updated' : ''}`, 'success');
-  });
+  // (Option add/edit/close forms removed — positions are import-derived)
 
   // ---- ACCOUNTS ----
   el('add-account-toggle').addEventListener('click', () => {
@@ -2989,22 +2910,7 @@ function init() {
     toast(editId ? 'Account updated!' : 'Account added!', 'success');
   });
 
-  // ---- SELL STOCK FORM ----
-  el('cancel-sell-btn').addEventListener('click', () => {
-    hideForm('sell-stock-form'); clearSellStockForm();
-  });
-  el('confirm-sell-btn').addEventListener('click', recordSale);
-  el('ss-shares').addEventListener('input', updateSellStockPreview);
-  el('ss-price').addEventListener('input', updateSellStockPreview);
-
-  // ---- CLOSE OPTION FORM ----
-  el('cancel-close-btn').addEventListener('click', () => {
-    hideForm('close-option-form'); clearCloseOptionForm();
-  });
-  el('confirm-close-btn').addEventListener('click', recordOptionClose);
-  el('co-contracts').addEventListener('input', updateCloseOptionPreview);
-  el('co-price').addEventListener('input', updateCloseOptionPreview);
-  el('co-outcome').addEventListener('change', updateCloseOptionPreview);
+  // (Sell stock / close option forms removed — handled via transaction import)
 
   // ---- SELL CRYPTO FORM ----
   el('cancel-sell-crypto-btn').addEventListener('click', () => {
