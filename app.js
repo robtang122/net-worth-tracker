@@ -727,6 +727,10 @@ function previewTxnImport(accounts) {
           `<span class="badge badge-ledger-manual">${type}</span> <strong>${count}</strong>`
         ).join('  &nbsp;')}
       </div>
+      <div class="import-replace-warning">
+        Applying will recompute all stock and option positions from transactions.
+        Currently tracked: <strong>${S.stocks.length} stocks</strong>, <strong>${S.options.length} options</strong> — these will be replaced.
+      </div>
       <div class="form-actions" style="margin-top:12px">
         <button class="btn btn-primary" onclick="applyTxnImport()">Apply ${fresh.length} Transactions</button>
         <button class="btn btn-ghost" onclick="document.getElementById('txn-import-preview').style.display='none'">Cancel</button>
@@ -740,11 +744,222 @@ function applyTxnImport() {
   _pendingImport = null;
   if (!fresh || !fresh.length) { toast('Nothing to import.', 'error'); return; }
   S.importedTxns = [...S.importedTxns, ...fresh];
+  const result = derivePositionsFromTxns();
   save();
   document.getElementById('txn-import-preview').style.display = 'none';
-  renderPerformance();
-  renderWheel();
-  toast(`${fresh.length} transactions imported.`, 'success');
+  renderAll();
+  toast(`${fresh.length} transactions imported → ${result.stocks} stocks, ${result.options} open options derived.`, 'success');
+}
+
+// ============================================================
+// POSITION ENGINE — derive holdings from imported transactions
+// ============================================================
+
+// Transaction types that represent cash movement (use amount field for ledger)
+const CASH_TXN_TYPES = new Set([
+  'deposit','withdrawal','stock_buy','stock_sell',
+  'option_sell','option_close','option_assign',
+  'dividend','interest','fee',
+]);
+
+function derivePositionsFromTxns() {
+  const txns = [...S.importedTxns].sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1);
+  if (!txns.length) return { stocks: 0, options: 0 };
+
+  // ── 1. Build/find S.accounts for each unique (source, accountLabel) ──
+  const acctKeyToId = {}; // "source::accountLabel" -> accountId
+  const seenKeys = new Set();
+
+  for (const t of txns) {
+    const key = `${t.source}::${t.accountLabel}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    let acct = S.accounts.find(a => a.importKey === key) ||
+               S.accounts.find(a => a.importDerived &&
+                 a.broker === t.source && (a.label || a.broker) === t.accountLabel);
+
+    if (!acct) {
+      acct = { id: uid(), broker: t.source, label: t.accountLabel,
+               importKey: key, importDerived: true };
+      S.accounts.push(acct);
+    } else {
+      acct.importKey    = key;
+      acct.importDerived = true;
+    }
+    acctKeyToId[key] = acct.id;
+  }
+
+  // ── 2. Derive stock positions (average cost method) ──
+  const posMap = {}; // "ticker::accountId" -> { ticker, accountId, shares, totalCost }
+
+  for (const t of txns) {
+    const acctId = acctKeyToId[`${t.source}::${t.accountLabel}`];
+    const qty    = Math.abs(t.quantity || 0);
+    const price  = t.price || 0;
+
+    if (t.type === 'stock_buy' || t.type === 'stock_transfer_in') {
+      if (!t.ticker || !qty) continue;
+      const k = `${t.ticker}::${acctId}`;
+      if (!posMap[k]) posMap[k] = { ticker: t.ticker, accountId: acctId, shares: 0, totalCost: 0 };
+      posMap[k].shares    += qty;
+      if (t.type === 'stock_buy') posMap[k].totalCost += qty * price;
+
+    } else if (t.type === 'stock_sell' || t.type === 'stock_transfer_out') {
+      if (!t.ticker || !qty) continue;
+      const k = `${t.ticker}::${acctId}`;
+      if (!posMap[k]) posMap[k] = { ticker: t.ticker, accountId: acctId, shares: 0, totalCost: 0 };
+      if (posMap[k].shares > 0) {
+        const avg = posMap[k].totalCost / posMap[k].shares;
+        posMap[k].totalCost = Math.max(0, posMap[k].totalCost - avg * qty);
+      }
+      posMap[k].shares = Math.max(0, posMap[k].shares - qty);
+
+    } else if (t.type === 'option_assign') {
+      const underlying = t.optionUnderlying || t.ticker;
+      if (!underlying) continue;
+      const assignQty = Math.abs(t.quantity || (t.contracts || 1) * 100);
+      const k = `${underlying}::${acctId}`;
+      if (!posMap[k]) posMap[k] = { ticker: underlying, accountId: acctId, shares: 0, totalCost: 0 };
+
+      if (t.optionType === 'put') {
+        // Put assigned: stock bought at strike price
+        posMap[k].shares    += assignQty;
+        posMap[k].totalCost += assignQty * (t.optionStrike || 0);
+      } else if (t.optionType === 'call') {
+        // Call assigned: stock called away
+        if (posMap[k].shares > 0) {
+          const avg = posMap[k].totalCost / posMap[k].shares;
+          posMap[k].totalCost = Math.max(0, posMap[k].totalCost - avg * assignQty);
+        }
+        posMap[k].shares = Math.max(0, posMap[k].shares - assignQty);
+      }
+    }
+  }
+
+  const newStocks = Object.values(posMap)
+    .filter(p => p.shares > 0.0001)
+    .map(p => {
+      const acct = S.accounts.find(a => a.id === p.accountId);
+      return {
+        id: uid(), ticker: p.ticker,
+        shares: +p.shares.toFixed(6),
+        costBasis: p.shares > 0 ? +(p.totalCost / p.shares).toFixed(4) : 0,
+        accountId: p.accountId, broker: acct ? acct.broker : '',
+        importDerived: true, notes: '',
+      };
+    });
+
+  // ── 3. Derive open option positions ──
+  // Key for shorts: "underlying::type::strike::expiry"
+  // Key for longs:  "underlying::type::strike::expiry::long"
+  const optMap = {};
+
+  for (const t of txns) {
+    const acctId     = acctKeyToId[`${t.source}::${t.accountLabel}`];
+    const underlying = t.optionUnderlying || t.ticker;
+    if (!underlying || !t.optionStrike || !t.optionExpiration || !t.optionType) continue;
+
+    const base      = `${underlying}::${t.optionType}::${t.optionStrike}::${t.optionExpiration}`;
+    const shortKey  = base;
+    const longKey   = base + '::long';
+    const contracts = Math.abs(t.contracts || 1);
+    const broker    = (S.accounts.find(a => a.id === acctId) || {}).broker || '';
+
+    if (t.type === 'option_sell') {
+      if (!optMap[shortKey]) optMap[shortKey] = { underlying, position: 'short',
+        optionType: t.optionType, strike: t.optionStrike, expiration: t.optionExpiration,
+        contracts: 0, premiumCollected: 0, accountId: acctId, broker };
+      optMap[shortKey].contracts         += contracts;
+      optMap[shortKey].premiumCollected  += Math.abs(t.amount || 0);
+
+    } else if (t.type === 'option_buy') {
+      if (!optMap[longKey]) optMap[longKey] = { underlying, position: 'long',
+        optionType: t.optionType, strike: t.optionStrike, expiration: t.optionExpiration,
+        contracts: 0, premiumCollected: 0, accountId: acctId, broker };
+      optMap[longKey].contracts += contracts;
+      optMap[longKey].premiumCollected += Math.abs(t.amount || 0);
+
+    } else if (['option_close','option_expire','option_assign'].includes(t.type)) {
+      if (optMap[shortKey]) {
+        optMap[shortKey].contracts = Math.max(0, optMap[shortKey].contracts - contracts);
+      }
+    } else if (t.type === 'option_sell_to_close') {
+      if (optMap[longKey]) {
+        optMap[longKey].contracts = Math.max(0, optMap[longKey].contracts - contracts);
+      }
+    }
+  }
+
+  const newOptions = Object.values(optMap)
+    .filter(o => o.contracts > 0)
+    .map(o => ({
+      id: uid(), underlying: o.underlying, position: o.position,
+      optionType: o.optionType, strike: o.strike, expiration: o.expiration,
+      contracts: o.contracts,
+      premium: o.contracts > 0 ? +(o.premiumCollected / (o.contracts * 100)).toFixed(4) : 0,
+      accountId: o.accountId, broker: o.broker, importDerived: true, notes: '',
+    }));
+
+  // ── 4. Rebuild ledger for import-derived accounts ──
+  // Summarize by account + ledger category (keeps ledger readable)
+  const importedAccountIds = new Set(Object.values(acctKeyToId));
+
+  // Wipe old import-derived entries
+  for (const acctId of importedAccountIds) {
+    S.ledger[acctId] = (S.ledger[acctId] || []).filter(e => !e.importDerived);
+  }
+
+  // Group cash transactions: accountId + ledgerType -> { amount, count, lastDate }
+  const groups = {};
+  for (const t of txns) {
+    if (!CASH_TXN_TYPES.has(t.type) || t.amount == null) continue;
+    const acctId = acctKeyToId[`${t.source}::${t.accountLabel}`];
+    if (!acctId) continue;
+    const lt = ledgerTypeForImportTxn(t.type);
+    const gk = `${acctId}::${lt}`;
+    if (!groups[gk]) groups[gk] = { accountId: acctId, lt, amount: 0, count: 0, lastDate: '' };
+    groups[gk].amount   += t.amount;
+    groups[gk].count    += 1;
+    groups[gk].lastDate  = t.date > groups[gk].lastDate ? t.date : groups[gk].lastDate;
+  }
+
+  for (const grp of Object.values(groups)) {
+    if (!grp.amount) continue;
+    addLedgerEntry(grp.accountId, {
+      date: grp.lastDate || new Date().toISOString().slice(0, 10),
+      type: grp.lt,
+      description: `Imported: ${ledgerTypeLabel(grp.lt)} (${grp.count})`,
+      amount: grp.amount,
+      auto: true,
+      importDerived: true,
+    });
+  }
+
+  // ── 5. Apply to state ──
+  S.stocks  = newStocks;
+  S.options = newOptions;
+
+  return { stocks: newStocks.length, options: newOptions.length };
+}
+
+function ledgerTypeForImportTxn(type) {
+  const m = {
+    deposit: 'manual', withdrawal: 'manual',
+    stock_buy: 'stock_sale', stock_sell: 'stock_sale',
+    option_sell: 'option_premium', option_close: 'option_close',
+    option_assign: 'option_close',
+    dividend: 'manual', interest: 'manual', fee: 'manual',
+  };
+  return m[type] || 'manual';
+}
+
+function recomputePositions() {
+  if (!S.importedTxns.length) { toast('No imported transactions to compute from.', 'error'); return; }
+  const result = derivePositionsFromTxns();
+  save();
+  renderAll();
+  toast(`Positions recomputed: ${result.stocks} stocks, ${result.options} open options.`, 'success');
 }
 
 // ============================================================
