@@ -96,32 +96,29 @@
     <!-- ACCOUNTS -->
     <section id="tab-accounts" class="tab-content">
       <div class="section-header">
-        <h2>Brokerage Accounts</h2>
+        <h2>Accounts</h2>
+        <button class="btn btn-ghost" onclick="clearPreImportAccounts()">✕ Clear Pre-Import Accounts</button>
         <button class="btn btn-primary" id="add-account-toggle">+ Add Account</button>
       </div>
 
       <div class="card form-card" id="account-form" style="display:none">
         <h3 id="account-form-title">Add Account</h3>
+        <p class="settings-desc" style="margin-bottom:12px">Brokerage accounts are created automatically from imports. Use this for accounts not covered by your transaction imports.</p>
         <div class="form-grid">
           <div class="form-group">
             <label>Broker</label>
             <select id="a-broker">
               <option value="Robinhood">Robinhood</option>
               <option value="Chase">Chase</option>
+              <option value="E-Trade">E-Trade</option>
+              <option value="Fidelity">Fidelity</option>
+              <option value="Schwab">Schwab</option>
               <option value="Other">Other</option>
             </select>
           </div>
           <div class="form-group">
             <label>Account Label <em>(optional)</em></label>
-            <input type="text" id="a-label" placeholder="e.g. Individual Margin">
-          </div>
-          <div class="form-group">
-            <label>Net Deposited ($) <em>(optional)</em></label>
-            <input type="number" id="a-deposited" placeholder="50000" min="0" step="any">
-          </div>
-          <div class="form-group">
-            <label>Cash Balance ($) <em>(opening balance — managed by ledger after creation)</em></label>
-            <input type="number" id="a-margin" placeholder="0" step="any">
+            <input type="text" id="a-label" placeholder="e.g. IRA">
           </div>
           <div class="form-group form-span2">
             <label>Notes <em>(optional)</em></label>

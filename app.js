@@ -755,6 +755,17 @@ function applyTxnImport() {
 // POSITION ENGINE — derive holdings from imported transactions
 // ============================================================
 
+const BROKER_NAMES = {
+  robinhood: 'Robinhood', chase: 'Chase',
+  etrade: 'E-Trade', 'e-trade': 'E-Trade',
+  fidelity: 'Fidelity', schwab: 'Schwab',
+  vanguard: 'Vanguard', tdameritrade: 'TD Ameritrade',
+};
+
+function normalizeBroker(source) {
+  return BROKER_NAMES[(source || '').toLowerCase()] || source || 'Other';
+}
+
 // Transaction types that represent cash movement (use amount field for ledger)
 const CASH_TXN_TYPES = new Set([
   'deposit','withdrawal','stock_buy','stock_sell',
@@ -775,17 +786,19 @@ function derivePositionsFromTxns() {
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
 
+    const broker = normalizeBroker(t.source);
     let acct = S.accounts.find(a => a.importKey === key) ||
                S.accounts.find(a => a.importDerived &&
-                 a.broker === t.source && (a.label || a.broker) === t.accountLabel);
+                 a.broker === broker && (a.label || a.broker) === t.accountLabel);
 
     if (!acct) {
-      acct = { id: uid(), broker: t.source, label: t.accountLabel,
+      acct = { id: uid(), broker, label: t.accountLabel,
                importKey: key, importDerived: true };
       S.accounts.push(acct);
     } else {
-      acct.importKey    = key;
+      acct.importKey     = key;
       acct.importDerived = true;
+      acct.broker        = broker; // normalize existing entries
     }
     acctKeyToId[key] = acct.id;
   }
@@ -869,7 +882,7 @@ function derivePositionsFromTxns() {
     if (t.type === 'option_sell') {
       if (!optMap[shortKey]) optMap[shortKey] = { underlying, position: 'short',
         optionType: t.optionType, strike: t.optionStrike, expiration: t.optionExpiration,
-        contracts: 0, premiumCollected: 0, accountId: acctId, broker };
+        contracts: 0, premiumCollected: 0, accountId: acctId, broker: normalizeBroker(broker) };
       optMap[shortKey].contracts         += contracts;
       optMap[shortKey].premiumCollected  += Math.abs(t.amount || 0);
 
@@ -1256,11 +1269,17 @@ function renderAccounts() {
     const costBasis  = brokerCostBasis(a);
     const cash       = accountCashBalance(a.id);
     const equity     = holdings + cash;
-    const deposited  = a.deposited || null;
-    const wealthGain = (deposited && holdings > 0) ? holdings - deposited : null;
-    const wealthPct  = (wealthGain !== null && deposited) ? (wealthGain / deposited) * 100 : null;
-    const costGain   = (costBasis > 0 && holdings > 0) ? holdings - costBasis : null;
-    const costPct    = (costGain !== null && costBasis) ? (costGain / costBasis) * 100 : null;
+
+    // Net deposited: prefer transaction-derived (import-driven accounts)
+    const txnNetDeposited = a.importKey
+      ? S.importedTxns
+          .filter(t => `${t.source}::${t.accountLabel}` === a.importKey &&
+                       (t.type === 'deposit' || t.type === 'withdrawal'))
+          .reduce((s, t) => s + (t.amount || 0), 0)
+      : null;
+
+    const costGain = (costBasis > 0 && holdings > 0) ? holdings - costBasis : null;
+    const costPct  = (costGain !== null && costBasis) ? (costGain / costBasis) * 100 : null;
 
     const brokerBadge = {
       'Chase':     'badge-chase',
@@ -1272,10 +1291,10 @@ function renderAccounts() {
     const label    = a.label ? `<div class="account-card-label">${a.label}</div>` : '';
     const updated  = a.updatedAt ? `<span class="account-card-updated">${fmtRelative(a.updatedAt)}</span>` : '';
 
-    const wealthRow = wealthGain !== null
+    const wealthRow = txnNetDeposited !== null && txnNetDeposited !== 0
       ? `<div class="account-wealth-row">
-           <span>Deposited: ${fmt(deposited)}</span>
-           <span class="${wealthGain >= 0 ? 'pos' : 'neg'}">${fmt(wealthGain)} (${fmtPct(wealthPct)})</span>
+           <span>Net deposited: ${fmt(txnNetDeposited)}</span>
+           <span class="${(equity - txnNetDeposited) >= 0 ? 'pos' : 'neg'}">${fmt(equity - txnNetDeposited)} gain</span>
          </div>`
       : costGain !== null
         ? `<div class="account-wealth-row">
@@ -1303,7 +1322,7 @@ function renderAccounts() {
         </div>
         <div class="account-metric">
           <div class="account-metric-label">Net Deposited</div>
-          <div class="account-metric-value">${deposited ? fmt(deposited) : '<span style="color:var(--muted)">—</span>'}</div>
+          <div class="account-metric-value">${txnNetDeposited !== null ? fmt(txnNetDeposited) : '<span style="color:var(--muted)">—</span>'}</div>
         </div>
         <div class="account-metric">
           <div class="account-metric-label">${cash < 0 ? 'Margin Debt' : 'Cash'}</div>
@@ -2347,8 +2366,6 @@ function editAccount(id) {
   if (!a) return;
   el('a-broker').value     = a.broker;
   el('a-label').value      = a.label || '';
-  el('a-deposited').value  = a.deposited || '';
-  el('a-margin').value     = accountCashBalance(id) || '';
   el('a-notes').value      = a.notes || '';
   el('a-editing-id').value = id;
   document.getElementById('account-form-title').textContent = 'Edit Account';
@@ -2360,6 +2377,18 @@ function delAccount(id) {
   S.accounts = S.accounts.filter(a => a.id !== id);
   save(); renderAll();
   toast('Account removed.');
+}
+
+function clearPreImportAccounts() {
+  const toRemove = S.accounts.filter(a => !a.importDerived);
+  if (!toRemove.length) { toast('No pre-import accounts to clear.', 'info'); return; }
+  if (!confirm(`Remove ${toRemove.length} manually-added account(s)? Import-derived accounts are kept.`)) return;
+  const removeIds = new Set(toRemove.map(a => a.id));
+  S.accounts = S.accounts.filter(a => !removeIds.has(a.id));
+  // Remove orphaned ledger entries
+  for (const id of removeIds) delete S.ledger[id];
+  save(); renderAll();
+  toast(`${toRemove.length} account(s) cleared.`, 'success');
 }
 
 // ============================================================
@@ -2658,7 +2687,7 @@ function clearPrivateForm() {
 }
 
 function clearAccountForm() {
-  ['a-label','a-deposited','a-margin','a-notes','a-editing-id'].forEach(id => el(id).value = '');
+  ['a-label','a-notes','a-editing-id'].forEach(id => el(id).value = '');
   el('a-broker').value = 'Robinhood';
   document.getElementById('account-form-title').textContent = 'Add Account';
 }
@@ -2880,29 +2909,16 @@ function init() {
   });
 
   el('save-account-btn').addEventListener('click', () => {
-    const broker    = el('a-broker').value;
-    const label     = el('a-label').value.trim();
-    const deposited = parseFloat(el('a-deposited').value) || null;
-    const openingCash = parseFloat(el('a-margin').value) || 0;
-    const notes     = el('a-notes').value.trim();
-    const editId    = el('a-editing-id').value;
+    const broker = el('a-broker').value;
+    const label  = el('a-label').value.trim();
+    const notes  = el('a-notes').value.trim();
+    const editId = el('a-editing-id').value;
 
     if (editId) {
-      // On edit: update metadata only — cash is managed by the ledger
       const i = S.accounts.findIndex(a => a.id === editId);
-      if (i !== -1) S.accounts[i] = { ...S.accounts[i], broker, label, deposited, notes, updatedAt: new Date().toISOString() };
+      if (i !== -1) S.accounts[i] = { ...S.accounts[i], broker, label, notes, updatedAt: new Date().toISOString() };
     } else {
-      // New account: create it, then post opening balance entry if non-zero
-      const newAcct = { id: uid(), broker, label, deposited, notes, updatedAt: new Date().toISOString() };
-      S.accounts.push(newAcct);
-      if (openingCash !== 0) {
-        addLedgerEntry(newAcct.id, {
-          date: new Date().toISOString().slice(0, 10),
-          type: 'opening_balance',
-          description: 'Opening balance',
-          amount: openingCash, auto: false,
-        });
-      }
+      S.accounts.push({ id: uid(), broker, label, notes, updatedAt: new Date().toISOString() });
     }
 
     save(); renderAll();
