@@ -114,3 +114,129 @@ Personal use. Relevant whenever a trade is recorded — selling stocks, opening/
 
 ## Open Questions
 - When a short option is edited (e.g. contracts changed), should the ledger entry update automatically or require manual correction?
+
+---
+
+# PRD: Import System, Performance Analytics & Wheel Strategy Tab
+
+**Date:** 2026-08-24
+**Status:** Draft
+
+## Problem
+The dashboard has no way to ingest historical brokerage data, so reconstructing a complete financial picture from 2024 onward requires tedious manual entry. Without that history, performance analytics (short vs. long-term gains, options income, total return) and wheel strategy tracking (premium income, collateral utilization, win rate) are impossible to compute accurately.
+
+## Goal
+A complete picture of financial performance from 2024 onward — imported from Robinhood, Chase, and E*Trade via Claude/Cowork parsing — with a dedicated Performance tab breaking down returns by category and a Wheel Strategy tab tracking options income and collateral efficiency.
+
+## Users
+Personal use only. Used when reviewing monthly performance, evaluating the wheel strategy, and making allocation decisions. Crypto and private investments remain manually managed and are out of scope for import.
+
+## Scope
+
+### In scope
+
+**1. Import System**
+- Standardized NWT Import JSON schema (see below) that Claude/Cowork outputs after parsing brokerage documents
+- Import button in the dashboard — shows a preview of what will be applied before confirming
+- Deduplication by transaction ID so re-importing the same file doesn't double-count
+- Supported transaction types: deposit, withdrawal, stock_buy, stock_sell, option_buy, option_sell, option_expire, option_assign, dividend, interest, fee, transfer_in, transfer_out
+- Short vs. long-term classification on sells (hold period < 1 year = short-term)
+- Strategy tagging on options transactions: `wheel` or `other`
+- Balance checkpoints per account (for reconciliation — dashboard shows diff vs. imported balance)
+- Cowork parsing targets: Robinhood CSV transaction history, Chase CSV/PDF statements, E*Trade 1099-B and transaction history
+- Historical scope: 2024 and 2025 full reconstruction; 2026 ongoing
+
+**2. Performance / Analytics Tab**
+- Realized gains broken down by: short-term, long-term, options income (premium), dividends
+- Breakdown by year: 2024, 2025, 2026
+- Net deposited and net withdrawn per account and total across all accounts
+- Total return: realized gains + current unrealized appreciation across stocks
+- All figures driven by imported transaction history; crypto and private investments excluded
+
+**3. Wheel Strategy Tab**
+- Premium collected: total, by month, by underlying ticker
+- Win rate: expired worthless vs. bought back vs. assigned (count + % breakdown)
+- Collateral utilization: stock value deployed as covered call collateral, cash securing puts — as a % of available assets
+- Return on collateral: annualized premium income / average collateral deployed
+- Open wheel positions (active covered calls and cash-secured puts) with current P/L
+- Historical closed positions with outcome and P/L
+
+### Out of scope
+- Crypto import (manual only)
+- Private investment import (manual only)
+- Real-time brokerage API connections (no Plaid/SnapTrade in this phase)
+- Tax optimization suggestions
+- Automatic Cowork → dashboard sync (user manually triggers import)
+- Options strategies beyond the wheel (straddles, spreads, etc.)
+
+## Import JSON Schema
+
+```json
+{
+  "schemaVersion": "1.0",
+  "source": "robinhood | chase | etrade | manual",
+  "accountLabel": "Robinhood Main",
+  "exportedAt": "2026-08-24",
+  "dateRange": { "from": "2024-01-01", "to": "2025-12-31" },
+  "transactions": [
+    {
+      "id": "unique-id-from-source",
+      "date": "2024-03-15",
+      "type": "stock_sell",
+      "ticker": "AAPL",
+      "description": "Sold 10 AAPL @ $185.50",
+      "quantity": 10,
+      "price": 185.50,
+      "amount": 1855.00,
+      "fees": 0,
+      "strategy": "wheel | null",
+      "holdingPeriodDays": 280,
+      "termType": "short | long | null",
+      "notes": ""
+    }
+  ],
+  "positions": [
+    {
+      "ticker": "AAPL",
+      "shares": 150,
+      "avgCostBasis": 142.30,
+      "asOfDate": "2025-12-31"
+    }
+  ],
+  "balanceCheckpoints": [
+    {
+      "date": "2025-12-31",
+      "cashBalance": 5234.50,
+      "portfolioValue": 87432.00
+    }
+  ]
+}
+```
+
+## Constraints
+- Browser-only, localStorage persistence — no backend
+- Import file size must be manageable in browser memory (single brokerage export at a time)
+- Cowork is the parser — dashboard only consumes the standardized schema, never raw brokerage files
+- Deduplication keyed on transaction `id` field — Cowork must generate stable, unique IDs per transaction
+- Crypto and private investment data untouched by import
+
+## Success Criteria
+- Can import a Cowork-generated JSON and see it previewed before applying — no blind data changes
+- Re-importing the same file produces no duplicates
+- Performance tab shows 2024 and 2025 gains broken down by short-term, long-term, options income, and dividends
+- Net deposited / withdrawn is accurate and reconciles against known brokerage statements
+- Wheel Strategy tab shows monthly premium income, win rate, and collateral utilization for all historical and open positions
+- Balance checkpoints in the import are compared against computed balances — discrepancies flagged visibly
+
+## Edge Cases & Risks
+- **Ambiguous transaction types**: Cowork must make a judgment call — dashboard accepts whatever type is in the schema, so bad tagging from Cowork flows through
+- **Hold period unknown**: if cost basis date isn't in the export, short/long-term can't be computed — show as "unclassified" rather than guess
+- **Partial imports**: if 2024 is imported but 2025 isn't yet, analytics should reflect only what's present without crashing
+- **Assigned options**: assignment transactions must link to the resulting stock position to avoid double-counting the cost basis
+- **Multiple imports from same brokerage**: dedup by ID prevents doubles, but if Cowork generates different IDs for the same transaction across runs, duplicates can sneak in — Cowork prompt must specify stable ID generation
+- **Collateral utilization**: covered call collateral requires knowing which stock lots are "reserved" — approximated from open short call positions matching held tickers
+
+## Open Questions
+- Should imported positions overwrite existing manually-entered stocks, or merge alongside them?
+- When a balance checkpoint shows a discrepancy, does the user resolve it manually or can the dashboard auto-adjust with a correction ledger entry?
+- Should the Wheel Strategy tab be visible even before any wheel-tagged transactions are imported (empty state), or gated behind having data?

@@ -15,6 +15,7 @@ const K = {
   optionPrices:        'nwt_option_prices',
   optionPriceFetched:  'nwt_option_price_fetched',
   ledger:              'nwt_ledger',
+  importedTxns:        'nwt_imported_txns',
 };
 
 const OPTION_STALE_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -36,6 +37,8 @@ let S = {
   optionPrices:       {}, // keyed by option id
   optionPriceFetched: {}, // keyed by option id → ISO timestamp of last fetch
   ledger:       {},       // { [accountId]: [{id, date, type, description, amount, auto}] }
+  importedTxns: [],       // flat array of all imported brokerage transactions
+  perfYear:     'all',    // year filter for performance tab
   filters:      { broker: 'all', type: 'all' },
   sort: {
     stocks:   { col: 'value',      dir: 'desc' },
@@ -64,6 +67,7 @@ function load() {
   S.optionPrices        = parse(K.optionPrices,       {});
   S.optionPriceFetched  = parse(K.optionPriceFetched, {});
   S.ledger              = parse(K.ledger,             {});
+  S.importedTxns        = parse(K.importedTxns,       []);
   if (S.settings.darkMode === undefined) S.settings.darkMode = true;
   // Migrate old marginDebt field → cash (positive debt → negative cash)
   S.accounts.forEach(a => {
@@ -103,6 +107,7 @@ function save() {
   ls(K.optionPrices,       S.optionPrices);
   ls(K.optionPriceFetched, S.optionPriceFetched);
   ls(K.ledger,             S.ledger);
+  ls(K.importedTxns,       S.importedTxns);
 }
 
 function parse(key, fallback) {
@@ -517,6 +522,8 @@ function renderAll() {
   renderCrypto();
   renderPrivate();
   renderRealized();
+  renderPerformance();
+  renderWheel();
   renderHistory();
 }
 
@@ -657,6 +664,342 @@ function applySortRows(rows, col, dir, valFn) {
     const cmp = va < vb ? -1 : 1;
     return dir === 'asc' ? cmp : -cmp;
   });
+}
+
+// ============================================================
+// IMPORT — BROKERAGE TRANSACTIONS
+// ============================================================
+let _pendingImport = null;
+
+function setupTxnImport() {
+  const input = document.getElementById('txn-import-file');
+  if (!input) return;
+  input.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const json = JSON.parse(ev.target.result);
+        previewTxnImport(Array.isArray(json) ? json : [json]);
+      } catch {
+        toast('Invalid JSON file.', 'error');
+      }
+      input.value = '';
+    };
+    reader.readAsText(file);
+  });
+}
+
+function previewTxnImport(accounts) {
+  // Flatten all transactions from all account objects
+  const allTxns = [];
+  for (const acct of accounts) {
+    for (const txn of (acct.transactions || [])) {
+      allTxns.push({ ...txn, source: txn.source || acct.source, accountLabel: txn.accountLabel || acct.accountLabel, importedAt: new Date().toISOString().slice(0, 10) });
+    }
+  }
+
+  const existingIds = new Set(S.importedTxns.map(t => t.id));
+  const fresh = allTxns.filter(t => !existingIds.has(t.id));
+  const dupes  = allTxns.length - fresh.length;
+
+  // Breakdown by type
+  const typeCounts = {};
+  for (const t of fresh) typeCounts[t.type] = (typeCounts[t.type] || 0) + 1;
+
+  const dates = fresh.map(t => t.date).sort();
+  const fromDate = dates[0] || '—';
+  const toDate   = dates[dates.length - 1] || '—';
+
+  const preview = document.getElementById('txn-import-preview');
+  preview.style.display = '';
+  preview.innerHTML = `
+    <div class="import-preview">
+      <div class="import-preview-stats">
+        <div class="import-stat"><span class="import-stat-num">${fresh.length}</span><span class="import-stat-label">New transactions</span></div>
+        <div class="import-stat"><span class="import-stat-num" style="color:var(--muted)">${dupes}</span><span class="import-stat-label">Duplicates skipped</span></div>
+        <div class="import-stat"><span class="import-stat-num" style="font-size:14px">${fromDate}</span><span class="import-stat-label">Earliest date</span></div>
+        <div class="import-stat"><span class="import-stat-num" style="font-size:14px">${toDate}</span><span class="import-stat-label">Latest date</span></div>
+      </div>
+      <div class="import-breakdown">
+        ${Object.entries(typeCounts).sort((a,b) => b[1]-a[1]).map(([type, count]) =>
+          `<span class="badge badge-ledger-manual">${type}</span> <strong>${count}</strong>`
+        ).join('  &nbsp;')}
+      </div>
+      <div class="form-actions" style="margin-top:12px">
+        <button class="btn btn-primary" onclick="applyTxnImport()">Apply ${fresh.length} Transactions</button>
+        <button class="btn btn-ghost" onclick="document.getElementById('txn-import-preview').style.display='none'">Cancel</button>
+      </div>
+    </div>`;
+  _pendingImport = fresh;
+}
+
+function applyTxnImport() {
+  const fresh = _pendingImport;
+  _pendingImport = null;
+  if (!fresh || !fresh.length) { toast('Nothing to import.', 'error'); return; }
+  S.importedTxns = [...S.importedTxns, ...fresh];
+  save();
+  document.getElementById('txn-import-preview').style.display = 'none';
+  renderPerformance();
+  renderWheel();
+  toast(`${fresh.length} transactions imported.`, 'success');
+}
+
+// ============================================================
+// RENDER — PERFORMANCE TAB
+// ============================================================
+function perfFilteredTxns() {
+  if (S.perfYear === 'all') return S.importedTxns;
+  return S.importedTxns.filter(t => t.date && t.date.startsWith(S.perfYear));
+}
+
+function renderPerformance() {
+  // Year pills
+  const years = [...new Set(S.importedTxns.map(t => t.date?.slice(0,4)).filter(Boolean))].sort();
+  const pillsEl = document.getElementById('perf-year-pills');
+  if (pillsEl) {
+    pillsEl.innerHTML = `<span class="filter-label">Year:</span>
+      <button class="pill${S.perfYear === 'all' ? ' active' : ''}" onclick="setPerfYear('all')">All</button>
+      ${years.map(y => `<button class="pill${S.perfYear === y ? ' active' : ''}" onclick="setPerfYear('${y}')">${y}</button>`).join('')}`;
+  }
+
+  if (!S.importedTxns.length) {
+    document.getElementById('perf-stats').innerHTML = `<p style="text-align:center;color:var(--muted);padding:36px">No imported transactions yet — upload your Cowork JSON in Settings.</p>`;
+    document.getElementById('perf-breakdown').innerHTML = '';
+    document.getElementById('perf-deposits').innerHTML = '';
+    return;
+  }
+
+  const txns = perfFilteredTxns();
+
+  // Compute categories
+  const wheelTypes = new Set(['option_sell','option_close','option_expire','option_assign']);
+  const grossPremium   = txns.filter(t => t.type === 'option_sell').reduce((s,t) => s + (t.amount||0), 0);
+  const btcCosts       = txns.filter(t => t.type === 'option_close').reduce((s,t) => s + (t.amount||0), 0); // negative
+  const netPremium     = grossPremium + btcCosts;
+  const dividends      = txns.filter(t => t.type === 'dividend').reduce((s,t) => s + (t.amount||0), 0);
+  const interest       = txns.filter(t => t.type === 'interest').reduce((s,t) => s + (t.amount||0), 0);
+  const fees           = txns.filter(t => t.type === 'fee').reduce((s,t) => s + (t.amount||0), 0);
+  const deposits       = txns.filter(t => t.type === 'deposit').reduce((s,t) => s + (t.amount||0), 0);
+  const withdrawals    = txns.filter(t => t.type === 'withdrawal').reduce((s,t) => s + (t.amount||0), 0);
+  const netDeposited   = deposits + withdrawals; // withdrawals are negative
+
+  // Stats row
+  document.getElementById('perf-stats').innerHTML = `
+    <div class="dash-cat">
+      <div class="dash-cat-label">Net Options Premium</div>
+      <div class="dash-cat-value ${netPremium >= 0 ? 'pos' : 'neg'}">${fmt(netPremium)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Dividends</div>
+      <div class="dash-cat-value pos">${fmt(dividends)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Interest</div>
+      <div class="dash-cat-value">${fmt(interest)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Net Deposited</div>
+      <div class="dash-cat-value">${fmt(netDeposited)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Fees Paid</div>
+      <div class="dash-cat-value neg">${fmt(fees)}</div>
+    </div>`;
+
+  // Breakdown card
+  const rows = [
+    { label: 'Gross Option Premium', amount: grossPremium, cls: 'pos' },
+    { label: 'Buy-to-Close Costs', amount: btcCosts, cls: 'neg' },
+    { label: 'Net Option Premium', amount: netPremium, cls: netPremium >= 0 ? 'pos' : 'neg', bold: true },
+    { label: 'Dividends', amount: dividends, cls: 'pos' },
+    { label: 'Interest Income', amount: interest, cls: 'pos' },
+    { label: 'Fees & Commissions', amount: fees, cls: 'neg' },
+  ];
+
+  document.getElementById('perf-breakdown').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <h3>Income Breakdown</h3>
+      <table class="tbl">
+        <thead><tr><th>Category</th><th>Amount</th><th>Transactions</th></tr></thead>
+        <tbody>
+          ${rows.map(r => `<tr>
+            <td>${r.bold ? `<strong>${r.label}</strong>` : r.label}</td>
+            <td><span class="${r.cls}">${fmt(r.amount)}</span></td>
+            <td style="color:var(--muted);font-size:12px">${r.bold ? '' : txns.filter(t => {
+              if (r.label.includes('Gross')) return t.type === 'option_sell';
+              if (r.label.includes('Buy-to-Close')) return t.type === 'option_close';
+              if (r.label.includes('Dividend')) return t.type === 'dividend';
+              if (r.label.includes('Interest')) return t.type === 'interest';
+              if (r.label.includes('Fees')) return t.type === 'fee';
+              return false;
+            }).length}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <p style="color:var(--muted);font-size:12px;margin-top:12px">Stock P&L not shown here — import your 1099-B through Cowork to unlock realized gain breakdown.</p>
+    </div>`;
+
+  // Deposits/withdrawals by account
+  const acctMap = {};
+  txns.filter(t => t.type === 'deposit' || t.type === 'withdrawal').forEach(t => {
+    const key = t.accountLabel || t.source || 'Unknown';
+    if (!acctMap[key]) acctMap[key] = { deposits: 0, withdrawals: 0 };
+    if (t.type === 'deposit') acctMap[key].deposits += t.amount || 0;
+    else acctMap[key].withdrawals += t.amount || 0;
+  });
+
+  const acctRows = Object.entries(acctMap);
+  document.getElementById('perf-deposits').innerHTML = acctRows.length ? `
+    <div class="card">
+      <h3>Deposits & Withdrawals by Account</h3>
+      <table class="tbl">
+        <thead><tr><th>Account</th><th>Deposits</th><th>Withdrawals</th><th>Net</th></tr></thead>
+        <tbody>
+          ${acctRows.map(([acct, v]) => `<tr>
+            <td>${acct}</td>
+            <td class="pos">${fmt(v.deposits)}</td>
+            <td class="neg">${fmt(v.withdrawals)}</td>
+            <td class="${(v.deposits + v.withdrawals) >= 0 ? 'pos' : 'neg'}">${fmt(v.deposits + v.withdrawals)}</td>
+          </tr>`).join('')}
+          <tr style="border-top:2px solid var(--border)">
+            <td><strong>Total</strong></td>
+            <td class="pos"><strong>${fmt(deposits)}</strong></td>
+            <td class="neg"><strong>${fmt(withdrawals)}</strong></td>
+            <td class="${netDeposited >= 0 ? 'pos' : 'neg'}"><strong>${fmt(netDeposited)}</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>` : '';
+}
+
+function setPerfYear(year) {
+  S.perfYear = year;
+  renderPerformance();
+}
+
+// ============================================================
+// RENDER — WHEEL STRATEGY TAB
+// ============================================================
+function renderWheel() {
+  if (!S.importedTxns.length && !S.options.length) {
+    document.getElementById('wheel-stats').innerHTML = `<p style="text-align:center;color:var(--muted);padding:36px">No data yet — import your Cowork JSON in Settings, or add options in the Options tab.</p>`;
+    ['wheel-by-underlying','wheel-monthly','wheel-open'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
+    return;
+  }
+
+  const wheelTxns = S.importedTxns.filter(t =>
+    t.strategy === 'wheel' || ['option_sell','option_close','option_expire','option_assign'].includes(t.type)
+  );
+
+  const grossPremium = wheelTxns.filter(t => t.type === 'option_sell').reduce((s,t) => s + (t.amount||0), 0);
+  const btcCosts     = wheelTxns.filter(t => t.type === 'option_close').reduce((s,t) => s + (t.amount||0), 0);
+  const netPremium   = grossPremium + btcCosts;
+  const expires      = wheelTxns.filter(t => t.type === 'option_expire').length;
+  const closes       = wheelTxns.filter(t => t.type === 'option_close').length;
+  const assigns      = wheelTxns.filter(t => t.type === 'option_assign').length;
+  const totalClosed  = expires + closes + assigns;
+  const winRate      = totalClosed > 0 ? ((expires / totalClosed) * 100).toFixed(1) : null;
+
+  document.getElementById('wheel-stats').innerHTML = `
+    <div class="dash-cat">
+      <div class="dash-cat-label">Gross Premium</div>
+      <div class="dash-cat-value pos">${fmt(grossPremium)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Buy-to-Close</div>
+      <div class="dash-cat-value neg">${fmt(btcCosts)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Net Premium</div>
+      <div class="dash-cat-value ${netPremium >= 0 ? 'pos' : 'neg'}">${fmt(netPremium)}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Win Rate (expired)</div>
+      <div class="dash-cat-value">${winRate !== null ? `${winRate}%` : '—'}</div>
+    </div>
+    <div class="dash-cat">
+      <div class="dash-cat-label">Expired / Closed / Assigned</div>
+      <div class="dash-cat-value" style="font-size:18px">${expires} / ${closes} / ${assigns}</div>
+    </div>`;
+
+  // By underlying
+  const underlyingMap = {};
+  wheelTxns.forEach(t => {
+    const key = t.optionUnderlying || t.ticker || '?';
+    if (!underlyingMap[key]) underlyingMap[key] = { gross: 0, btc: 0, expires: 0, closes: 0, assigns: 0 };
+    const u = underlyingMap[key];
+    if (t.type === 'option_sell')   { u.gross += t.amount || 0; }
+    if (t.type === 'option_close')  { u.btc   += t.amount || 0; u.closes++; }
+    if (t.type === 'option_expire') { u.expires++; }
+    if (t.type === 'option_assign') { u.assigns++; }
+  });
+
+  const underlyingRows = Object.entries(underlyingMap).sort((a,b) => (b[1].gross + b[1].btc) - (a[1].gross + a[1].btc));
+  document.getElementById('wheel-by-underlying').innerHTML = underlyingRows.length ? `
+    <div class="card" style="margin-bottom:16px">
+      <h3>By Underlying</h3>
+      <div class="table-wrap"><table class="tbl">
+        <thead><tr><th>Ticker</th><th>Gross Premium</th><th>BTC Cost</th><th>Net</th><th>Expired</th><th>Closed</th><th>Assigned</th><th>Win %</th></tr></thead>
+        <tbody>
+          ${underlyingRows.map(([ticker, u]) => {
+            const net = u.gross + u.btc;
+            const total = u.expires + u.closes + u.assigns;
+            const wr = total > 0 ? ((u.expires / total) * 100).toFixed(0) + '%' : '—';
+            return `<tr>
+              <td><strong>${ticker}</strong></td>
+              <td class="pos">${fmt(u.gross)}</td>
+              <td class="neg">${fmt(u.btc)}</td>
+              <td class="${net >= 0 ? 'pos' : 'neg'}">${fmt(net)}</td>
+              <td>${u.expires}</td><td>${u.closes}</td><td>${u.assigns}</td>
+              <td>${wr}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+    </div>` : '';
+
+  // By month
+  const monthMap = {};
+  wheelTxns.filter(t => t.type === 'option_sell').forEach(t => {
+    const mo = t.date?.slice(0, 7) || '?';
+    monthMap[mo] = (monthMap[mo] || 0) + (t.amount || 0);
+  });
+  const monthRows = Object.entries(monthMap).sort();
+  document.getElementById('wheel-monthly').innerHTML = monthRows.length ? `
+    <div class="card" style="margin-bottom:16px">
+      <h3>Gross Premium by Month</h3>
+      <div class="table-wrap"><table class="tbl">
+        <thead><tr><th>Month</th><th>Premium Collected</th></tr></thead>
+        <tbody>${monthRows.map(([mo, amt]) => `<tr><td>${mo}</td><td class="pos">${fmt(amt)}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </div>` : '';
+
+  // Open short positions from S.options
+  const openShorts = S.options.filter(o => o.position === 'short');
+  document.getElementById('wheel-open').innerHTML = openShorts.length ? `
+    <div class="card">
+      <h3>Open Short Positions</h3>
+      <div class="table-wrap"><table class="tbl">
+        <thead><tr><th>Underlying</th><th>Type</th><th>Strike</th><th>Expiry</th><th>Contracts</th><th>Premium/Contract</th><th>Total Premium</th></tr></thead>
+        <tbody>
+          ${openShorts.map(o => {
+            const premTotal = (o.premium || 0) * (o.contracts || 1) * 100;
+            return `<tr>
+              <td><strong>${o.underlying}</strong></td>
+              <td><span class="badge badge-${o.optionType}">${o.optionType?.toUpperCase()}</span></td>
+              <td>$${o.strike}</td>
+              <td>${o.expiration}</td>
+              <td>${o.contracts || 1}</td>
+              <td>${fmtP(o.premium || 0)}</td>
+              <td class="pos">${fmt(premTotal)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+    </div>` : '';
 }
 
 // RENDER — ACCOUNTS
@@ -2546,6 +2889,7 @@ document.addEventListener('DOMContentLoaded', () => {
   load();
   applyTheme(S.settings.darkMode !== false);
   init();
+  setupTxnImport();
   renderAll();
 
   if (S.crypto.length) {

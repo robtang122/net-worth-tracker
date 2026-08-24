@@ -39,6 +39,8 @@
     <button class="tab" data-tab="crypto">Crypto</button>
     <button class="tab" data-tab="private">Private</button>
     <button class="tab" data-tab="realized">Realized</button>
+    <button class="tab" data-tab="performance">Performance</button>
+    <button class="tab" data-tab="wheel">Wheel</button>
     <button class="tab" data-tab="history">History</button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
@@ -622,6 +624,26 @@
       </div>
     </section>
 
+    <!-- PERFORMANCE -->
+    <section id="tab-performance" class="tab-content">
+      <div class="section-header">
+        <h2>Performance</h2>
+        <div id="perf-year-pills" class="filter-group"></div>
+      </div>
+      <div id="perf-stats" class="dash-cats card" style="margin-bottom:16px"></div>
+      <div id="perf-breakdown"></div>
+      <div id="perf-deposits"></div>
+    </section>
+
+    <!-- WHEEL STRATEGY -->
+    <section id="tab-wheel" class="tab-content">
+      <div class="section-header"><h2>Wheel Strategy</h2></div>
+      <div id="wheel-stats" class="dash-cats card" style="margin-bottom:16px"></div>
+      <div id="wheel-by-underlying"></div>
+      <div id="wheel-monthly"></div>
+      <div id="wheel-open"></div>
+    </section>
+
     <!-- SETTINGS -->
     <section id="tab-settings" class="tab-content">
       <div class="section-header"><h2>Settings</h2></div>
@@ -687,6 +709,17 @@
           <button class="btn btn-ghost" id="import-btn">Import JSON</button>
           <input type="file" id="import-file" accept=".json" style="display:none">
         </div>
+      </div>
+
+      <div class="card settings-card">
+        <h3>Import Brokerage Transactions <span style="color:var(--muted);font-weight:400;font-size:13px">(from Cowork)</span></h3>
+        <p class="settings-desc">Upload the JSON output from Cowork after parsing your brokerage CSV exports. Safe to re-import — duplicates are skipped automatically.</p>
+        <div class="form-actions">
+          <button class="btn btn-primary" onclick="document.getElementById('txn-import-file').click()">Choose JSON File</button>
+          <input type="file" id="txn-import-file" accept=".json" style="display:none">
+          <span id="txn-import-status" style="color:var(--muted);font-size:13px"></span>
+        </div>
+        <div id="txn-import-preview" style="display:none;margin-top:16px"></div>
       </div>
 
       <div class="card settings-card danger">
