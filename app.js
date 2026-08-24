@@ -1069,7 +1069,9 @@ function renderPerformance() {
 
   // Income summary (year-filtered) — brief overview; detail lives in Wheel tab
   const txns = perfFilteredTxns();
-  const optIncome  = txns.filter(t => ['option_sell','option_close'].includes(t.type)).reduce((s,t) => s + (t.amount||0), 0);
+  const wheelIncome = txns.filter(t => t.strategy === 'wheel' && ['option_sell','option_close'].includes(t.type)).reduce((s,t) => s + (t.amount||0), 0);
+  const longOptPL   = txns.filter(t => t.strategy !== 'wheel' && ['option_buy','option_sell','option_close'].includes(t.type)).reduce((s,t) => s + (t.amount||0), 0);
+  const optIncome   = wheelIncome + longOptPL;
   const divs       = txns.filter(t => t.type === 'dividend').reduce((s,t) => s + (t.amount||0), 0);
   const intIncome  = txns.filter(t => t.type === 'interest').reduce((s,t) => s + (t.amount||0), 0);
   const feesTotal  = txns.filter(t => t.type === 'fee').reduce((s,t) => s + (t.amount||0), 0);
@@ -1082,7 +1084,8 @@ function renderPerformance() {
       <div class="table-wrap"><table class="tbl">
         <thead><tr><th>Category</th><th>Amount</th></tr></thead>
         <tbody>
-          <tr><td>Net Options Premium</td><td><span class="${optIncome >= 0 ? 'pos' : 'neg'}">${fmt(optIncome)}</span></td></tr>
+          <tr><td>Wheel Premium (net)</td><td><span class="${wheelIncome >= 0 ? 'pos' : 'neg'}">${fmt(wheelIncome)}</span></td></tr>
+          <tr><td>Long Options P&L</td><td><span class="${longOptPL >= 0 ? 'pos' : 'neg'}">${fmt(longOptPL)}</span></td></tr>
           <tr><td>Dividends</td><td><span class="pos">${fmt(divs)}</span></td></tr>
           <tr><td>Interest</td><td>${fmt(intIncome)}</td></tr>
           <tr><td>Fees</td><td><span class="neg">${fmt(feesTotal)}</span></td></tr>
@@ -1134,7 +1137,7 @@ function renderWheel() {
 
   // Filter by selected year
   const allWheelTxns = S.importedTxns.filter(t =>
-    t.strategy === 'wheel' || ['option_sell','option_close','option_expire','option_assign'].includes(t.type)
+    t.strategy === 'wheel' && ['option_sell','option_close','option_expire','option_assign'].includes(t.type)
   );
   const wheelTxns = S.perfYear === 'all'
     ? allWheelTxns
@@ -2143,7 +2146,7 @@ function renderRealized() {
 
   // Stats
   const optionNetIncome = txns
-    .filter(t => ['option_sell', 'option_close'].includes(t.type))
+    .filter(t => ['option_buy', 'option_sell', 'option_close'].includes(t.type))
     .reduce((s, t) => s + (t.amount || 0), 0);
   const stockProceeds = txns.filter(t => t.type === 'stock_sell').reduce((s, t) => s + (t.amount || 0), 0);
   const dividends     = txns.filter(t => t.type === 'dividend').reduce((s, t) => s + (t.amount || 0), 0);
