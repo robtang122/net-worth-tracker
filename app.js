@@ -16,6 +16,7 @@ const K = {
   optionPriceFetched:  'nwt_option_price_fetched',
   ledger:              'nwt_ledger',
   importedTxns:        'nwt_imported_txns',
+  historyPoints:       'nwt_history_points',
 };
 
 const OPTION_STALE_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -37,8 +38,9 @@ let S = {
   optionPrices:       {}, // keyed by option id
   optionPriceFetched: {}, // keyed by option id → ISO timestamp of last fetch
   ledger:       {},       // { [accountId]: [{id, date, type, description, amount, auto}] }
-  importedTxns: [],       // flat array of all imported brokerage transactions
-  perfYear:     'all',    // year filter for performance tab
+  importedTxns:  [],       // flat array of all imported brokerage transactions
+  historyPoints: [],       // computed monthly net-worth points from transaction history
+  perfYear:      'all',    // year filter for performance tab
   filters:      { broker: 'all', type: 'all' },
   sort: {
     stocks:   { col: 'value',      dir: 'desc' },
@@ -68,6 +70,7 @@ function load() {
   S.optionPriceFetched  = parse(K.optionPriceFetched, {});
   S.ledger              = parse(K.ledger,             {});
   S.importedTxns        = parse(K.importedTxns,       []);
+  S.historyPoints       = parse(K.historyPoints,      []);
   if (S.settings.darkMode === undefined) S.settings.darkMode = true;
   // Migrate old marginDebt field → cash (positive debt → negative cash)
   S.accounts.forEach(a => {
@@ -108,6 +111,7 @@ function save() {
   ls(K.optionPriceFetched, S.optionPriceFetched);
   ls(K.ledger,             S.ledger);
   ls(K.importedTxns,       S.importedTxns);
+  ls(K.historyPoints,      S.historyPoints);
 }
 
 function parse(key, fallback) {
@@ -351,6 +355,185 @@ async function fetchCryptoPrices(coinIds) {
     }
     return out;
   } catch { return {}; }
+}
+
+// ============================================================
+// HISTORICAL PRICE FETCHERS
+// ============================================================
+
+// Finnhub stock/candle with monthly resolution — returns { "YYYY-MM": closePrice }
+async function fetchFinnhubMonthlyCandles(ticker, fromDate, toDate) {
+  if (!S.settings.finnhubKey) return {};
+  try {
+    const from = Math.floor(new Date(fromDate + 'T00:00:00Z').getTime() / 1000);
+    const to   = Math.floor(new Date(toDate   + 'T23:59:59Z').getTime() / 1000);
+    const res  = await fetch(
+      `https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=M&from=${from}&to=${to}&token=${S.settings.finnhubKey}`
+    );
+    const data = await res.json();
+    if (data.s !== 'ok' || !Array.isArray(data.c)) return {};
+    const out = {};
+    data.t.forEach((ts, i) => {
+      const ym = new Date(ts * 1000).toISOString().slice(0, 7);
+      out[ym] = data.c[i];
+    });
+    return out;
+  } catch { return {}; }
+}
+
+// Coingecko monthly price history — returns { "YYYY-MM": price }
+async function fetchCoingeckoMonthlyHistory(coinId) {
+  try {
+    const res  = await fetch(
+      `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=max&interval=monthly`
+    );
+    const data = await res.json();
+    if (!data.prices) return {};
+    const out = {};
+    for (const [ts, price] of data.prices) {
+      const ym = new Date(ts).toISOString().slice(0, 7);
+      out[ym] = price;
+    }
+    return out;
+  } catch { return {}; }
+}
+
+// Month-end date strings between two ISO date strings (inclusive)
+function getMonthEnds(fromDateStr, toDateStr) {
+  const result = [];
+  const to     = new Date(toDateStr);
+  let year     = new Date(fromDateStr).getFullYear();
+  let month    = new Date(fromDateStr).getMonth(); // 0-indexed
+
+  while (true) {
+    const lastDay = new Date(year, month + 1, 0);
+    if (lastDay >= to) {
+      result.push(toDateStr); // include today as the final point
+      break;
+    }
+    result.push(lastDay.toISOString().slice(0, 10));
+    month++;
+    if (month > 11) { month = 0; year++; }
+  }
+  return result;
+}
+
+// Stock share counts from a filtered/sorted transaction list (no cost basis needed)
+function computeStockPositionsAt(txns) {
+  const pos = {};
+  for (const t of txns) {
+    const qty = Math.abs(t.quantity || 0);
+    if (!qty) continue;
+
+    if (t.type === 'stock_buy' || t.type === 'stock_transfer_in') {
+      if (t.ticker) pos[t.ticker] = (pos[t.ticker] || 0) + qty;
+    } else if (t.type === 'stock_sell' || t.type === 'stock_transfer_out') {
+      if (t.ticker) pos[t.ticker] = Math.max(0, (pos[t.ticker] || 0) - qty);
+    } else if (t.type === 'option_assign') {
+      const u = t.optionUnderlying || t.ticker;
+      if (!u) continue;
+      const aqty = Math.abs(t.quantity || (t.contracts || 1) * 100);
+      if (t.optionType === 'put')       pos[u] = (pos[u] || 0) + aqty;
+      else if (t.optionType === 'call') pos[u] = Math.max(0, (pos[u] || 0) - aqty);
+    }
+  }
+  return pos;
+}
+
+// ============================================================
+// BUILD HISTORICAL NET WORTH
+// ============================================================
+async function buildHistoricalNetWorth() {
+  if (!S.importedTxns.length) { toast('Import transactions first.', 'error'); return; }
+  if (!S.settings.finnhubKey) { toast('Add a Finnhub API key in Settings for historical prices.', 'error'); return; }
+
+  const btn = document.getElementById('build-history-btn');
+  if (btn) { btn.textContent = '⏳ Building…'; btn.disabled = true; }
+
+  try {
+    const dates    = S.importedTxns.map(t => t.date).filter(Boolean).sort();
+    const fromDate = dates[0];
+    const toDate   = new Date().toISOString().slice(0, 10);
+    const monthEnds = getMonthEnds(fromDate, toDate);
+
+    // Unique stock tickers that appear in any stock/assign transaction
+    const stockTickers = [...new Set(
+      S.importedTxns
+        .filter(t => ['stock_buy','stock_sell','stock_transfer_in','stock_transfer_out','option_assign'].includes(t.type))
+        .map(t => t.optionUnderlying || t.ticker)
+        .filter(Boolean)
+    )];
+
+    // Fetch monthly stock price history (one Finnhub call per ticker)
+    const stockHistory = {};
+    for (const ticker of stockTickers) {
+      toast(`Fetching price history: ${ticker}…`, 'info');
+      stockHistory[ticker] = await fetchFinnhubMonthlyCandles(ticker, fromDate, toDate);
+      await delay(300);
+    }
+
+    // Fetch monthly crypto price history (Coingecko)
+    const cryptoHistory = {};
+    const coinIds = [...new Set(S.crypto.map(c => c.coinId))].filter(Boolean);
+    for (const coinId of coinIds) {
+      toast(`Fetching crypto history: ${coinId}…`, 'info');
+      cryptoHistory[coinId] = await fetchCoingeckoMonthlyHistory(coinId);
+      await delay(1200);
+    }
+
+    // Private investment total — flat line (current value backdated to start)
+    const privateVal = S.private.reduce((sum, p) => sum + (p.currentValue || 0), 0);
+
+    // Build one data point per month-end
+    const points = [];
+    for (const monthEnd of monthEnds) {
+      const txnsToDate = S.importedTxns
+        .filter(t => (t.date || '') <= monthEnd)
+        .sort((a, b) => a.date < b.date ? -1 : 1);
+
+      const yearMonth = monthEnd.slice(0, 7); // "YYYY-MM"
+
+      // Stock value: positions at this date × historical price
+      const stockPos = computeStockPositionsAt(txnsToDate);
+      let stockVal = 0;
+      for (const [ticker, shares] of Object.entries(stockPos)) {
+        if (shares <= 0) continue;
+        const price = stockHistory[ticker]?.[yearMonth] || S.prices[ticker] || 0;
+        stockVal += shares * price;
+      }
+
+      // Cash: net of all transaction cash flows up to this date
+      // (deposits/sells/dividends positive; purchases/fees negative)
+      const cashVal = txnsToDate.reduce((sum, t) => sum + (t.amount || 0), 0);
+
+      // Crypto: current holdings × historical price (crypto holdings are manually tracked)
+      let cryptoVal = 0;
+      for (const c of S.crypto) {
+        const price = cryptoHistory[c.coinId]?.[yearMonth] || S.cryptoPrices[c.coinId] || 0;
+        cryptoVal += (c.amount || 0) * price;
+      }
+
+      points.push({
+        date: monthEnd,
+        total: stockVal + cashVal + cryptoVal + privateVal,
+        stocks: stockVal, cash: cashVal, crypto: cryptoVal, private: privateVal,
+      });
+    }
+
+    S.historyPoints = points;
+    ls(K.historyPoints, points);
+
+    drawHistoryChart('history-chart', 240);
+    drawHistoryChart('dash-history-chart', 220);
+    renderHistory();
+
+    toast(`History built — ${points.length} monthly data points.`, 'success');
+  } catch (err) {
+    console.error('buildHistoricalNetWorth error', err);
+    toast('Error building history — check console.', 'error');
+  } finally {
+    if (btn) { btn.textContent = '📈 Build History'; btn.disabled = false; }
+  }
 }
 
 // Fetch options prices via Tradier (sandbox or live)
@@ -1996,7 +2179,28 @@ function renderHistory() {
   const snaps = [...S.snapshots].sort((a, b) => new Date(a.date) - new Date(b.date));
   set('stat-count', snaps.length);
 
-  if (snaps.length >= 2) {
+  // Prefer computed history points for summary stats; fall back to snapshots
+  const pts = S.historyPoints && S.historyPoints.length >= 2
+    ? [...S.historyPoints].sort((a, b) => a.date < b.date ? -1 : 1)
+    : null;
+
+  if (pts) {
+    const first  = pts[0];
+    const last   = pts[pts.length - 1];
+    const growth = last.total - first.total;
+    const pct    = first.total ? (growth / first.total) * 100 : 0;
+
+    const gEl = document.getElementById('stat-growth');
+    gEl.textContent = fmt(growth);
+    gEl.className   = 'stat-value ' + (growth >= 0 ? 'pos' : 'neg');
+
+    const pEl = document.getElementById('stat-pct');
+    pEl.textContent = fmtPct(pct);
+    pEl.className   = 'stat-value ' + (pct >= 0 ? 'pos' : 'neg');
+
+    set('stat-first',  fmt(first.total));
+    set('stat-latest', fmt(last.total));
+  } else if (snaps.length >= 2) {
     const first  = snaps[0];
     const last   = snaps[snaps.length - 1];
     const growth = last.totalNetWorth - first.totalNetWorth;
@@ -2055,11 +2259,23 @@ function drawHistoryChart(canvasId, height) {
 
   if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
 
-  const snaps = [...S.snapshots].sort((a, b) => new Date(a.date) - new Date(b.date));
   const theme = getChartTheme();
   const ctx   = canvas.getContext('2d');
 
-  if (snaps.length < 2) {
+  // Prefer transaction-derived history; fall back to manual snapshots
+  const useHistory = S.historyPoints && S.historyPoints.length >= 2;
+  const useSnaps   = !useHistory && S.snapshots.length >= 2;
+
+  let dataPoints = [];
+  if (useHistory) {
+    dataPoints = [...S.historyPoints].sort((a, b) => a.date < b.date ? -1 : 1);
+  } else if (useSnaps) {
+    dataPoints = [...S.snapshots]
+      .sort((a, b) => new Date(a.date) - new Date(b.date))
+      .map(s => ({ date: s.date, total: s.totalNetWorth }));
+  }
+
+  if (dataPoints.length < 2) {
     charts[canvasId] = new Chart(ctx, {
       type: 'line',
       data: { labels: [], datasets: [{ data: [] }] },
@@ -2072,40 +2288,81 @@ function drawHistoryChart(canvasId, height) {
     return;
   }
 
+  const labels = dataPoints.map(p => {
+    const d = new Date(p.date + 'T12:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+  });
+
+  // For history points, also draw stacked area series
+  const datasets = [];
+
+  if (useHistory) {
+    datasets.push(
+      {
+        label: 'Stocks',
+        data: dataPoints.map(p => p.stocks),
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59,130,246,0.45)',
+        fill: 'origin', tension: 0.3, pointRadius: 2, borderWidth: 1.5,
+      },
+      {
+        label: 'Cash',
+        data: dataPoints.map(p => p.cash),
+        borderColor: '#10b981',
+        backgroundColor: 'rgba(16,185,129,0.35)',
+        fill: '-1', tension: 0.3, pointRadius: 2, borderWidth: 1.5,
+      },
+      {
+        label: 'Crypto',
+        data: dataPoints.map(p => p.crypto),
+        borderColor: '#f59e0b',
+        backgroundColor: 'rgba(245,158,11,0.3)',
+        fill: '-1', tension: 0.3, pointRadius: 2, borderWidth: 1.5,
+      },
+      {
+        label: 'Private',
+        data: dataPoints.map(p => p.private),
+        borderColor: '#8b5cf6',
+        backgroundColor: 'rgba(139,92,246,0.25)',
+        fill: '-1', tension: 0.3, pointRadius: 2, borderWidth: 1.5,
+      },
+    );
+  } else {
+    datasets.push({
+      label: 'Net Worth',
+      data: dataPoints.map(p => p.total),
+      borderColor: '#3b82f6',
+      backgroundColor: 'rgba(59,130,246,0.12)',
+      fill: true, tension: 0.35, pointRadius: 4, pointHoverRadius: 6, borderWidth: 2,
+    });
+  }
+
   charts[canvasId] = new Chart(ctx, {
     type: 'line',
-    data: {
-      labels: snaps.map(s =>
-        new Date(s.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
-      ),
-      datasets: [{
-        label: 'Net Worth',
-        data: snaps.map(s => s.totalNetWorth),
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59,130,246,0.12)',
-        fill: true,
-        tension: 0.35,
-        pointRadius: 4,
-        pointHoverRadius: 6,
-        borderWidth: 2,
-      }]
-    },
+    data: { labels, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { display: false },
+        legend: { display: useHistory, position: 'bottom', labels: { font: { size: 11 }, boxWidth: 10, color: theme.tick } },
         tooltip: {
           backgroundColor: theme.tooltip,
           titleColor: theme.tooltipText,
           bodyColor: theme.tooltipText,
           borderColor: theme.grid,
           borderWidth: 1,
-          callbacks: { label: ctx => ` ${fmt(ctx.raw)}` }
+          callbacks: {
+            label: c => ` ${c.dataset.label}: ${fmt(c.raw)}`,
+            footer: useHistory
+              ? items => ` Total: ${fmt(items.reduce((s, i) => s + i.raw, 0))}`
+              : undefined,
+          }
         }
       },
       scales: {
         y: {
+          stacked: useHistory,
           ticks: { callback: v => fmt(v), font: { size: 11 }, color: theme.tick },
           grid:  { color: theme.grid },
         },

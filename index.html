@@ -521,6 +521,7 @@
           <button class="btn btn-primary" onclick="document.getElementById('txn-import-file').click()">Choose JSON File</button>
           <input type="file" id="txn-import-file" accept=".json" style="display:none">
           <button class="btn btn-ghost" onclick="recomputePositions()" title="Re-derive stocks, options, and cash from already-imported transactions">↻ Recompute Positions</button>
+          <button class="btn btn-ghost" id="build-history-btn" onclick="buildHistoricalNetWorth()" title="Fetch historical monthly prices and build net worth chart from transaction history">&#128200; Build History</button>
           <span id="txn-import-status" style="color:var(--muted);font-size:13px"></span>
         </div>
         <div id="txn-import-preview" style="display:none;margin-top:16px"></div>
