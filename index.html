@@ -505,6 +505,23 @@
       </div>
 
       <div class="card settings-card">
+        <h3>Price Overrides</h3>
+        <p class="settings-desc">Override Finnhub prices for specific tickers where the data is wrong (e.g. closed-end funds, thinly traded securities).</p>
+        <div class="form-actions" style="align-items:flex-end;gap:8px">
+          <div class="form-group" style="margin:0;flex:0 0 100px">
+            <label>Ticker</label>
+            <input type="text" id="po-ticker" placeholder="e.g. RVI" style="text-transform:uppercase">
+          </div>
+          <div class="form-group" style="margin:0;flex:0 0 120px">
+            <label>Price ($)</label>
+            <input type="number" id="po-price" placeholder="27.00" step="0.01" min="0">
+          </div>
+          <button class="btn btn-primary" onclick="addPriceOverride()">Add Override</button>
+        </div>
+        <div id="price-overrides-list" style="margin-top:12px"></div>
+      </div>
+
+      <div class="card settings-card">
         <h3>Data</h3>
         <p class="settings-desc">Export a JSON backup or restore from one.</p>
         <div class="form-actions">

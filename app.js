@@ -32,7 +32,7 @@ let S = {
   options:      [],
   trades:       [],
   snapshots:    [],
-  settings:     { finnhubKey: '', tradierKey: '', tradierSandbox: true, marketDataKey: '', darkMode: true, cryptoDeposited: null },
+  settings:     { finnhubKey: '', tradierKey: '', tradierSandbox: true, marketDataKey: '', darkMode: true, cryptoDeposited: null, priceOverrides: {} },
   prices:       {},
   cryptoPrices: {},
   optionPrices:       {}, // keyed by option id
@@ -63,7 +63,8 @@ function load() {
   S.options      = parse(K.options,      []);
   S.trades       = parse(K.trades,       []);
   S.snapshots    = parse(K.snapshots,    []);
-  S.settings     = parse(K.settings,     { finnhubKey: '', tradierKey: '', tradierSandbox: true, marketDataKey: '', darkMode: true, cryptoDeposited: null });
+  S.settings     = parse(K.settings,     { finnhubKey: '', tradierKey: '', tradierSandbox: true, marketDataKey: '', darkMode: true, cryptoDeposited: null, priceOverrides: {} });
+  if (!S.settings.priceOverrides) S.settings.priceOverrides = {};
   S.prices       = parse(K.prices,       {});
   S.cryptoPrices = parse(K.cryptoPrices, {});
   S.optionPrices        = parse(K.optionPrices,       {});
@@ -128,8 +129,15 @@ function uid() {
 // ============================================================
 // CALCULATIONS
 // ============================================================
+
+// Price for a ticker — manual override takes precedence over Finnhub
+function getStockPrice(ticker) {
+  const ov = S.settings.priceOverrides?.[ticker];
+  return (ov != null && ov > 0) ? ov : (S.prices[ticker] || 0);
+}
+
 function stocksTotal() {
-  return S.stocks.reduce((sum, s) => sum + ((S.prices[s.ticker] || 0) * s.shares), 0);
+  return S.stocks.reduce((sum, s) => sum + (getStockPrice(s.ticker) * s.shares), 0);
 }
 
 function cryptoTotal() {
@@ -250,7 +258,7 @@ function stockBelongsToAccount(s, a) {
 function brokerHoldings(account) {
   return S.stocks.reduce((sum, s) => {
     if (stockBelongsToAccount(s, account)) {
-      return sum + ((S.prices[s.ticker] || 0) * s.shares);
+      return sum + (getStockPrice(s.ticker) * s.shares);
     }
     return sum;
   }, 0);
@@ -498,7 +506,7 @@ async function buildHistoricalNetWorth() {
       let stockVal = 0;
       for (const [ticker, shares] of Object.entries(stockPos)) {
         if (shares <= 0) continue;
-        const price = stockHistory[ticker]?.[yearMonth] || S.prices[ticker] || 0;
+        const price = stockHistory[ticker]?.[yearMonth] || getStockPrice(ticker);
         stockVal += shares * price;
       }
 
@@ -1629,7 +1637,7 @@ function renderStocks() {
   // Apply sort
   const { col, dir } = S.sort.stocks;
   rows = applySortRows(rows, col, dir, (s, c) => {
-    const price = S.prices[s.ticker];
+    const price = getStockPrice(s.ticker) || null;
     switch (c) {
       case 'ticker':    return s.ticker.toLowerCase();
       case 'shares':    return s.shares;
@@ -1651,7 +1659,7 @@ function renderStocks() {
 
   let total = 0;
   tbody.innerHTML = rows.map(s => {
-    const price = S.prices[s.ticker];
+    const price = getStockPrice(s.ticker) || null;
     const val   = price != null ? price * s.shares : null;
     if (val) total += val;
 
@@ -2669,7 +2677,7 @@ function openSellStock(id) {
   if (!s) return;
   el('ss-stock-id').value = id;
   el('ss-shares').value   = '';
-  el('ss-price').value    = S.prices[s.ticker] ? S.prices[s.ticker].toFixed(2) : '';
+  el('ss-price').value    = getStockPrice(s.ticker) ? getStockPrice(s.ticker).toFixed(2) : '';
   el('ss-date').value     = new Date().toISOString().slice(0, 10);
   el('ss-notes').value    = '';
   set('sell-stock-label', `Sell <strong>${s.ticker}</strong>`);
@@ -3034,6 +3042,52 @@ function autoBackup() {
 }
 
 // ============================================================
+// PRICE OVERRIDES
+// ============================================================
+function addPriceOverride() {
+  const ticker = el('po-ticker').value.trim().toUpperCase();
+  const price  = parseFloat(el('po-price').value);
+  if (!ticker)      { toast('Enter a ticker.', 'error'); return; }
+  if (isNaN(price) || price <= 0) { toast('Enter a valid price.', 'error'); return; }
+  S.settings.priceOverrides[ticker] = price;
+  save();
+  el('po-ticker').value = '';
+  el('po-price').value  = '';
+  renderPriceOverrides();
+  renderAll();
+  toast(`Override set: ${ticker} = $${price}`, 'success');
+}
+
+function removePriceOverride(ticker) {
+  delete S.settings.priceOverrides[ticker];
+  save();
+  renderPriceOverrides();
+  renderAll();
+  toast(`Override removed for ${ticker}.`, 'info');
+}
+
+function renderPriceOverrides() {
+  const el2 = document.getElementById('price-overrides-list');
+  if (!el2) return;
+  const entries = Object.entries(S.settings.priceOverrides || {});
+  if (!entries.length) {
+    el2.innerHTML = '<p style="color:var(--muted);font-size:13px">No overrides set.</p>';
+    return;
+  }
+  el2.innerHTML = `<table class="tbl" style="max-width:380px">
+    <thead><tr><th>Ticker</th><th>Override Price</th><th>Finnhub Price</th><th></th></tr></thead>
+    <tbody>${entries.map(([ticker, price]) => `
+      <tr>
+        <td><strong>${ticker}</strong></td>
+        <td class="pos">$${price.toFixed(2)}</td>
+        <td style="color:var(--muted)">${S.prices[ticker] ? '$' + S.prices[ticker].toFixed(2) : '—'}</td>
+        <td><button class="icon-btn" onclick="removePriceOverride('${ticker}')" title="Remove">✕</button></td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+// ============================================================
 // EVENT LISTENERS
 // ============================================================
 function init() {
@@ -3218,6 +3272,7 @@ function init() {
   el('tradier-key').value        = S.settings.tradierKey    || '';
   el('tradier-sandbox').checked  = S.settings.tradierSandbox !== false;
   el('marketdata-key').value     = S.settings.marketDataKey || '';
+  renderPriceOverrides();
 
   el('save-settings-btn').addEventListener('click', () => {
     S.settings.finnhubKey     = el('finnhub-key').value.trim();
