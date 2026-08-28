@@ -1260,14 +1260,18 @@ function renderPerformance() {
 
   // Income summary (year-filtered) — brief overview; detail lives in Wheel tab
   const txns = perfFilteredTxns();
-  const wheelIncome = txns.filter(t => t.strategy === 'wheel' && ['option_sell','option_close'].includes(t.type)).reduce((s,t) => s + (t.amount||0), 0);
-  const longOptPL   = txns.filter(t => t.strategy !== 'wheel' && ['option_buy','option_sell','option_close'].includes(t.type)).reduce((s,t) => s + (t.amount||0), 0);
-  const optIncome   = wheelIncome + longOptPL;
-  const divs       = txns.filter(t => t.type === 'dividend').reduce((s,t) => s + (t.amount||0), 0);
-  const intIncome  = txns.filter(t => t.type === 'interest').reduce((s,t) => s + (t.amount||0), 0);
-  const feesTotal  = txns.filter(t => t.type === 'fee').reduce((s,t) => s + (t.amount||0), 0);
-  const totalIncome = optIncome + divs + intIncome + feesTotal;
-  const periodLabel = S.perfYear !== 'all' ? S.perfYear : 'All Time';
+  // Wheel: only premium COLLECTED from selling options (strategy=wheel, type=option_sell)
+  const wheelPremium = txns.filter(t => t.strategy === 'wheel' && t.type === 'option_sell').reduce((s,t) => s + (t.amount||0), 0);
+  const wheelBTC     = txns.filter(t => t.strategy === 'wheel' && t.type === 'option_close').reduce((s,t) => s + (t.amount||0), 0);
+  const wheelNet     = wheelPremium + wheelBTC;
+  // Long options: directional plays (LEAPS etc.) — includes buy cost + any sale proceeds
+  const longOptPL    = txns.filter(t => t.strategy !== 'wheel' && ['option_buy','option_sell','option_close'].includes(t.type)).reduce((s,t) => s + (t.amount||0), 0);
+  const optIncome    = wheelNet + longOptPL;
+  const divs         = txns.filter(t => t.type === 'dividend').reduce((s,t) => s + (t.amount||0), 0);
+  const intIncome    = txns.filter(t => t.type === 'interest').reduce((s,t) => s + (t.amount||0), 0);
+  const feesTotal    = txns.filter(t => t.type === 'fee').reduce((s,t) => s + (t.amount||0), 0);
+  const totalIncome  = optIncome + divs + intIncome + feesTotal;
+  const periodLabel  = S.perfYear !== 'all' ? S.perfYear : 'All Time';
 
   document.getElementById('perf-deposits').innerHTML = S.importedTxns.length ? `
     <div class="card">
@@ -1275,7 +1279,9 @@ function renderPerformance() {
       <div class="table-wrap"><table class="tbl">
         <thead><tr><th>Category</th><th>Amount</th></tr></thead>
         <tbody>
-          <tr><td>Wheel Premium (net)</td><td><span class="${wheelIncome >= 0 ? 'pos' : 'neg'}">${fmt(wheelIncome)}</span></td></tr>
+          <tr><td>Wheel Premium Collected</td><td><span class="pos">${fmt(wheelPremium)}</span></td></tr>
+          <tr><td style="padding-left:20px;color:var(--muted)">Buy-to-Close</td><td><span class="${wheelBTC >= 0 ? '' : 'neg'}">${fmt(wheelBTC)}</span></td></tr>
+          <tr><td style="padding-left:20px;color:var(--muted)">Net Wheel Premium</td><td><span class="${wheelNet >= 0 ? 'pos' : 'neg'}">${fmt(wheelNet)}</span></td></tr>
           <tr><td>Long Options P&L</td><td><span class="${longOptPL >= 0 ? 'pos' : 'neg'}">${fmt(longOptPL)}</span></td></tr>
           <tr><td>Dividends</td><td><span class="pos">${fmt(divs)}</span></td></tr>
           <tr><td>Interest</td><td>${fmt(intIncome)}</td></tr>
@@ -1727,7 +1733,11 @@ function renderOptions() {
   </tr>`;
 
   if (!S.options.length) {
-    tbody.innerHTML = `<tr class="empty"><td colspan="13">No options yet — add one above.</td></tr>`;
+    tbody.innerHTML = `<tr class="empty"><td colspan="13">${
+      S.importedTxns.length
+        ? 'No open option positions — all options have been closed, expired, or assigned.'
+        : 'No options yet — import your Cowork JSON in Settings to derive positions from transactions.'
+    }</td></tr>`;
     set('options-foot', '<strong>—</strong>');
     return;
   }
